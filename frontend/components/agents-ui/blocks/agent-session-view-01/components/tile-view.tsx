@@ -10,6 +10,7 @@ import {
 } from '@livekit/components-react';
 import { cn } from '@/lib/shadcn/utils';
 import { AudioVisualizer } from './audio-visualizer';
+import { LanguageCode, TRANSLATIONS } from '@/lib/translations';
 
 const ANIMATION_TRANSITION: MotionProps['transition'] = {
   type: 'spring',
@@ -78,6 +79,7 @@ interface TileLayoutProps {
   audioVisualizerRadialBarCount?: number;
   audioVisualizerRadialRadius?: number;
   audioVisualizerBarCount?: number;
+  lang?: LanguageCode;
 }
 
 export function TileLayout({
@@ -91,8 +93,12 @@ export function TileLayout({
   audioVisualizerGridRowCount,
   audioVisualizerGridColumnCount,
   audioVisualizerWaveLineWidth,
+  lang = 'en',
 }: TileLayoutProps) {
-  const { videoTrack: agentVideoTrack } = useVoiceAssistant();
+  const { state, videoTrack: agentVideoTrack } = useVoiceAssistant();
+  const { localParticipant } = useLocalParticipant();
+  const isMicrophoneEnabled = localParticipant.isMicrophoneEnabled;
+  const t = TRANSLATIONS[lang];
   const [screenShareTrack] = useTracks([Track.Source.ScreenShare]);
   const cameraTrack: TrackReference | undefined = useLocalTrackRef(Track.Source.Camera);
 
@@ -130,33 +136,73 @@ export function TileLayout({
                     ...ANIMATION_TRANSITION,
                     delay: animationDelay,
                   }}
-                  className={cn('relative aspect-square h-[90px]')}
+                  className={cn(
+                    'relative transition-all duration-300 flex flex-col items-center justify-center',
+                    chatOpen ? 'h-[90px] w-[90px] aspect-square' : 'w-full max-w-lg min-h-[350px]'
+                  )}
                 >
-                  <AudioVisualizer
-                    key="audio-visualizer"
-                    initial={{ scale: 1 }}
-                    animate={{ scale: chatOpen ? 0.2 : 1 }}
-                    transition={{
-                      ...ANIMATION_TRANSITION,
-                      delay: animationDelay,
-                    }}
-                    audioVisualizerType={audioVisualizerType}
-                    audioVisualizerColor={audioVisualizerColor}
-                    audioVisualizerColorShift={audioVisualizerColorShift}
-                    audioVisualizerBarCount={audioVisualizerBarCount}
-                    audioVisualizerRadialBarCount={audioVisualizerRadialBarCount}
-                    audioVisualizerRadialRadius={audioVisualizerRadialRadius}
-                    audioVisualizerGridRowCount={audioVisualizerGridRowCount}
-                    audioVisualizerGridColumnCount={audioVisualizerGridColumnCount}
-                    audioVisualizerWaveLineWidth={audioVisualizerWaveLineWidth}
-                    isChatOpen={chatOpen}
-                    className={cn(
-                      'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2',
-                      'bg-background rounded-[50px] border border-transparent transition-[border,drop-shadow]',
-                      chatOpen && 'border-input shadow-2xl/10 delay-200'
-                    )}
-                    style={{ color: audioVisualizerColor }}
-                  />
+                  <div className="relative flex items-center justify-center size-[220px] md:size-[300px]">
+                    <AudioVisualizer
+                      key="audio-visualizer"
+                      initial={{ scale: 1 }}
+                      animate={{ scale: chatOpen ? 0.2 : 1 }}
+                      transition={{
+                        ...ANIMATION_TRANSITION,
+                        delay: animationDelay,
+                      }}
+                      audioVisualizerType={audioVisualizerType}
+                      audioVisualizerColor={audioVisualizerColor}
+                      audioVisualizerColorShift={audioVisualizerColorShift}
+                      audioVisualizerBarCount={audioVisualizerBarCount}
+                      audioVisualizerRadialBarCount={audioVisualizerRadialBarCount}
+                      audioVisualizerRadialRadius={audioVisualizerRadialRadius}
+                      audioVisualizerGridRowCount={audioVisualizerGridRowCount}
+                      audioVisualizerGridColumnCount={audioVisualizerGridColumnCount}
+                      audioVisualizerWaveLineWidth={audioVisualizerWaveLineWidth}
+                      isChatOpen={chatOpen}
+                      className={cn(
+                        'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2',
+                        'bg-background rounded-[50px] border border-transparent transition-[border,drop-shadow]',
+                        chatOpen && 'border-input shadow-2xl/10 delay-200'
+                      )}
+                      style={{ color: audioVisualizerColor }}
+                    />
+
+                    {/* FinBuddy Visual Voice Avatar */}
+                    <div className={cn(
+                      "absolute rounded-full overflow-hidden flex items-center justify-center shadow-lg transition-all duration-300",
+                      chatOpen ? "size-16 border-2 border-border/85" : "size-36 md:size-44 border-4 border-border/95",
+                      state === 'speaking' && "border-indigo-500/80 shadow-indigo-500/20 scale-105",
+                      state === 'listening' && "border-emerald-500/80 shadow-emerald-500/20 animate-pulse",
+                      (state !== 'speaking' && state !== 'listening') && "border-border/80"
+                    )}>
+                      {/* Glowing background ring */}
+                      <div className={cn(
+                        "absolute inset-0 rounded-full opacity-15 animate-ping duration-1000 pointer-events-none",
+                        state === 'speaking' && "bg-indigo-500",
+                        state === 'listening' && "bg-emerald-500"
+                      )} />
+                      
+                      {/* Generated Avatar Image */}
+                      <img 
+                        src="/finbuddy_avatar.png" 
+                        alt="FinBuddy Avatar" 
+                        className="size-full object-cover relative z-10"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Warning off notification text below the avatar */}
+                  {!isMicrophoneEnabled && !chatOpen && (
+                    <div className="text-center mt-6 px-6">
+                      <h2 className="text-xl md:text-2xl font-bold tracking-tight mb-2 text-foreground">
+                        {t.micOffTitle}
+                      </h2>
+                      <p className="text-xs md:text-sm text-muted-foreground max-w-sm mx-auto">
+                        {t.micOffWarning}
+                      </p>
+                    </div>
+                  )}
                 </motion.div>
               )}
 

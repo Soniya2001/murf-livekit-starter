@@ -2,7 +2,8 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
-import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
+import { useAgent, useSessionContext, useSessionMessages, useLocalParticipant } from '@livekit/components-react';
+import { AlertTriangle } from 'lucide-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
 import {
   AgentControlBar,
@@ -11,6 +12,7 @@ import {
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { cn } from '@/lib/shadcn/utils';
 import { TileLayout } from './tile-view';
+import { LanguageCode, TRANSLATIONS } from '@/lib/translations';
 
 const MotionMessage = motion.create(Shimmer);
 
@@ -153,6 +155,7 @@ export interface AgentSessionView_01Props {
   audioVisualizerWaveLineWidth?: number;
   /** Optional class name merged onto the outer `<section>` container. */
   className?: string;
+  lang?: LanguageCode;
 }
 
 export function AgentSessionView_01({
@@ -173,6 +176,7 @@ export function AgentSessionView_01({
   audioVisualizerWaveLineWidth,
   ref,
   className,
+  lang = 'en',
   ...props
 }: React.ComponentProps<'section'> & AgentSessionView_01Props) {
   const session = useSessionContext();
@@ -180,6 +184,9 @@ export function AgentSessionView_01({
   const [chatOpen, setChatOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
+  const { localParticipant } = useLocalParticipant();
+  const isMicrophoneEnabled = localParticipant.isMicrophoneEnabled;
+  const t = TRANSLATIONS[lang];
 
   const controls: AgentControlBarControls = {
     leave: true,
@@ -204,6 +211,57 @@ export function AgentSessionView_01({
       className={cn('bg-background relative z-10 h-full w-full overflow-hidden', className)}
       {...props}
     >
+      {/* Dynamic mic off banner */}
+      {!isMicrophoneEnabled && (
+        <div className="absolute top-18 inset-x-4 z-50 flex justify-center pointer-events-none">
+          <div className="px-4 py-2 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 rounded-lg text-xs font-semibold text-red-600 dark:text-red-400 flex items-center gap-2 shadow-md pointer-events-auto max-w-xl text-center">
+            <AlertTriangle className="size-4 shrink-0 text-red-500" />
+            <span>{t.micOffWarning}</span>
+          </div>
+        </div>
+      )}
+
+      <div className="absolute top-6 inset-x-0 z-50 flex justify-center pointer-events-none">
+        <div className={cn(
+          "px-4 py-2 rounded-full border bg-card/90 backdrop-blur-md shadow-md flex items-center gap-2 text-xs font-semibold tracking-wide transition-all duration-300 pointer-events-auto",
+          agentState === 'listening' && "border-emerald-500/30 text-emerald-600 dark:text-emerald-400 shadow-emerald-500/5",
+          agentState === 'speaking' && "border-indigo-500/30 text-indigo-600 dark:text-indigo-400 shadow-indigo-500/5",
+          agentState === 'connecting' && "border-amber-500/30 text-amber-600 dark:text-amber-400 shadow-amber-500/5",
+          agentState === 'disconnected' && "border-border text-muted-foreground"
+        )}>
+          {agentState === 'listening' && (
+            <>
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              </span>
+              <span>Listening to you</span>
+            </>
+          )}
+          {agentState === 'speaking' && (
+            <>
+              <div className="flex items-center gap-0.5 h-3">
+                <span className="w-0.5 bg-indigo-500 animate-[bounce_0.8s_infinite_100ms] h-full" />
+                <span className="w-0.5 bg-indigo-500 animate-[bounce_0.8s_infinite_300ms] h-[70%]" />
+                <span className="w-0.5 bg-indigo-500 animate-[bounce_0.8s_infinite_200ms] h-[85%]" />
+              </div>
+              <span>Agent is speaking</span>
+            </>
+          )}
+          {agentState === 'connecting' && (
+            <>
+              <span className="animate-spin border-2 border-t-amber-500 border-r-transparent border-b-transparent border-l-transparent rounded-full size-3" />
+              <span>Agent is joining...</span>
+            </>
+          )}
+          {agentState === 'disconnected' && (
+            <>
+              <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/40" />
+              <span>Offline</span>
+            </>
+          )}
+        </div>
+      </div>
       <Fade top className="absolute inset-x-4 top-0 z-10 h-40" />
       {/* transcript */}
 
@@ -232,6 +290,7 @@ export function AgentSessionView_01({
         audioVisualizerBarCount={audioVisualizerBarCount}
         audioVisualizerRadialBarCount={audioVisualizerRadialBarCount}
         audioVisualizerRadialRadius={audioVisualizerRadialRadius}
+        lang={lang}
         audioVisualizerGridRowCount={audioVisualizerGridRowCount}
         audioVisualizerGridColumnCount={audioVisualizerGridColumnCount}
         audioVisualizerWaveLineWidth={audioVisualizerWaveLineWidth}

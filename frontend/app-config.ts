@@ -33,20 +33,20 @@ export interface AppConfig {
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
-  companyName: 'Murf AI',
-  pageTitle: 'Voice Agent Starter',
-  pageDescription: 'A voice agent powered by Murf Falcon — the fastest TTS API',
+  companyName: 'FinBuddy',
+  pageTitle: 'FinBuddy Voice Assistant',
+  pageDescription: 'Your real-time guide to financial literacy, government schemes, and digital safety',
 
   supportsChatInput: true,
   supportsVideoInput: true,
   supportsScreenShare: true,
   isPreConnectBufferEnabled: true,
 
-  logo: '/murf-logo.svg',
+  logo: '/favicon.ico',
   accent: '#6366F1',
-  logoDark: '/murf-logo-dark.svg',
+  logoDark: '/favicon.ico',
   accentDark: '#818cf8',
-  startButtonText: 'Start talking',
+  startButtonText: 'Start Talking',
 
   // optional: audio visualization configuration
   // audioVisualizerType: 'bar',

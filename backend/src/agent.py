@@ -1,4 +1,5 @@
 import logging
+import json
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -13,9 +14,11 @@ from livekit.agents import (
     tokenize,
     room_io,
     UserInputTranscribedEvent,
+    function_tool,
 )
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from db import get_caller, save_caller
 
 logger = logging.getLogger("agent")
 
@@ -49,6 +52,12 @@ Greet the user immediately and warmly:
 - **CRITICAL**: Never promise or guarantee scheme approval, loan disbursement, or financial payouts.
 - **Escalation Script / Refusal**: If a user asks about account-specific actions, transaction processing, or demands approvals, say: "For your security, I cannot ask for or process OTPs, PINs, or account details, and I cannot guarantee scheme approvals. Please contact your official bank branch directly for assistance with your account."
 
+# MEMORY & CONSENT GUARDRAILS
+- **CRITICAL**: You MUST ask the caller for permission before saving or remembering any information. For example, say: "Would it be alright if I remember your name and the schemes we discussed for next time?"
+- If the caller says NO, do NOT save their information and do NOT call the save tool.
+- If the caller says YES, call the `save_caller_details` tool to store their name, language, and eligibility/checked schemes facts.
+- Facts to save: Schemes already checked (e.g. APY, PMJJBY, PMSBY), eligibility answers. Do NOT store account or ID numbers.
+
 # STYLE
 - Keep responses short and conversational, suitable for a spoken voice assistant.
 - Use simple punctuation; avoid bullet lists with complex symbols or emojis that are hard to speak.
@@ -58,25 +67,67 @@ Greet the user immediately and warmly:
 
 
 class Assistant(Agent):
-    def __init__(self) -> None:
-        super().__init__(instructions=SYSTEM_PROMPT)
+    def __init__(self, user_id: str = "default_user", initial_info: str = "") -> None:
+        instructions = SYSTEM_PROMPT
+        
+        # If returning user info is present, inject greeting instruction
+        if initial_info:
+            try:
+                caller_data = json.loads(initial_info)
+                name = caller_data.get("name", "there")
+                facts = caller_data.get("facts", {})
+                schemes = facts.get("schemes_checked", "N/A")
+                instructions = instructions.replace(
+                    'Greet the user immediately and warmly:\n"Hello! I am your Financial Services Assistant. How can I help you learn about financial schemes, banking, or staying safe from fraud today?"',
+                    f'Greet the user back by name, welcome them back, and continue from last time. For example: "Hello {name}, welcome back! Last time we spoke about {schemes}. How are you doing with that or did it help?"'
+                )
+                instructions += f"\n\n# RETURNING USER PROFILE\n{initial_info}\n"
+            except Exception:
+                pass
+                
+        instructions += f"\n\n# CURRENT SESSION INFO\n- Current User ID: {user_id}\n"
+        super().__init__(instructions=instructions)
 
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
+    @function_tool
+    async def lookup_caller(self, user_id: str) -> str:
+        """Look up details of a caller by user_id to see their name, language preference, and history.
+        
+        Args:
+            user_id: The unique identifier/phone number of the caller.
+        """
+        logger.info(f"Looking up caller with user_id: {user_id}")
+        caller = get_caller(user_id)
+        if caller:
+            return json.dumps(caller)
+        return "No record found."
+
+    @function_tool
+    async def save_caller_details(
+        self,
+        user_id: str,
+        name: str,
+        language_preference: str,
+        schemes_checked: str,
+        eligibility_answers: str,
+    ) -> str:
+        """Saves caller details to database.
+        
+        CRITICAL: Ask the caller first before saving. If they say no, do NOT run this function.
+        
+        Args:
+            user_id: The unique identifier/phone number of the caller.
+            name: Name of the caller.
+            language_preference: The caller's preferred language.
+            schemes_checked: Schemes already checked. Do NOT store account or ID numbers.
+            eligibility_answers: Eligibility answers.
+        """
+        logger.info(f"Saving caller details for {user_id} - {name}")
+        facts = {
+            "schemes_checked": schemes_checked,
+            "eligibility_answers": eligibility_answers
+        }
+        save_caller(user_id, name, language_preference, facts)
+        return "Successfully saved details."
 
 
 server = AgentServer()
@@ -96,6 +147,26 @@ async def my_agent(ctx: JobContext):
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
+
+    # Look up user if they already exist
+    user_id = "default_user"
+    initial_info = ""
+    try:
+        import asyncio
+        remote_participant = None
+        for _ in range(50):
+            if ctx.room.remote_participants:
+                remote_participant = next(iter(ctx.room.remote_participants.values()))
+                break
+            await asyncio.sleep(0.1)
+
+        if remote_participant:
+            user_id = remote_participant.identity
+            caller = get_caller(user_id)
+            if caller:
+                initial_info = json.dumps(caller)
+    except Exception as e:
+        logger.error(f"Error during initial caller lookup: {e}")
 
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
@@ -184,13 +255,6 @@ async def my_agent(ctx: JobContext):
             logger.info(f"English language detected (lang: {detected_lang}). Switching TTS to Anisha (en-IN).")
             session.tts.update_options(voice="Anisha", locale="en-IN", style="Conversation")
 
-    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
-    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
-    # 1. Install livekit-agents[openai]
-    # 2. Set OPENAI_API_KEY in .env.local
-    # 3. Add `from livekit.plugins import openai` to the top of this file
-    # 4. Use the following session setup instead of the version above
-    # session = AgentSession(
     #     llm=openai.realtime.RealtimeModel(voice="marin")
     # )
 
@@ -204,7 +268,7 @@ async def my_agent(ctx: JobContext):
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(),
+        agent=Assistant(user_id=user_id, initial_info=initial_info),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(

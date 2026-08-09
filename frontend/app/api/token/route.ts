@@ -44,9 +44,19 @@ export async function POST(req: Request) {
       );
     }
       
+    // Check for a persistent caller_id cookie
+    const cookieHeader = req.headers.get('cookie') || '';
+    let callerId = '';
+    const match = cookieHeader.match(/caller_id=([^;]+)/);
+    if (match) {
+      callerId = decodeURIComponent(match[1].trim());
+    } else {
+      callerId = `user_${Math.floor(100000 + Math.random() * 900000)}`;
+    }
+
     // Generate participant token
     const participantName = 'user';
-    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
+    const participantIdentity = `voice_assistant_user_${callerId}`;
     const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
 
     const participantToken = await createParticipantToken(
@@ -65,7 +75,14 @@ export async function POST(req: Request) {
     const headers = new Headers({
       'Cache-Control': 'no-store',
     });
-    return NextResponse.json(data, { headers });
+
+    const response = NextResponse.json(data, { headers });
+    response.cookies.set('caller_id', callerId, {
+      maxAge: 60 * 60 * 24 * 365, // 1 year
+      path: '/',
+      httpOnly: false,
+    });
+    return response;
   } catch (error) {
     if (error instanceof Error) {
       console.error(error);

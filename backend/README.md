@@ -231,6 +231,33 @@ backend/
 - [LiveKit Agents Docs](https://docs.livekit.io/agents)
 - [Deepgram Nova-3 Docs](https://developers.deepgram.com)
 
+## Day 5 – Grounding FinBuddy in Real Data
+
+To prevent hallucinations, FinBuddy is grounded in official government data.
+
+1. **Mandatory Disclosure**: FinBuddy currently uses a locally curated government-scheme dataset sourced from official government portals. It is not a live government API and may not reflect changes made after the recorded source update date. Users should verify important information through the relevant official government or financial institution.
+2. **Data Source Verification Details**:
+   - **PMJDY**: [Official Portal](https://www.pmjdy.gov.in/) (Source Last Updated: May 20, 2026)
+   - **APY**: [Official Portal](https://www.npscra.nsdl.co.in/scheme-atal-pension-yojana.php) (Source Last Updated: June 15, 2026)
+   - **PMJJBY**: [Official Portal](https://www.jansuraksha.gov.in/) (Source Last Updated: April 10, 2026)
+   - **PMSBY**: [Official Portal](https://www.jansuraksha.gov.in/) (Source Last Updated: April 10, 2026)
+   - **PMMY (PM MUDRA)**: [Official Portal](https://www.mudra.org.in/) (Source Last Updated: February 5, 2026)
+   - **Stand-Up India**: [Official Portal](https://www.standupmitra.in/) (Source Last Updated: March 12, 2026)
+   - **JanSamarth**: [Official Portal](https://www.jansamarth.in/) (Source Last Updated: April 18, 2026)
+3. **Tool Name**: `lookup_government_scheme(scheme_name: str, information_requested: str)`
+4. **Tool Description**: Tells the LLM to query the database whenever specific scheme details are needed rather than answering from memory.
+5. **Data Freshness**: Every successful tool invocation returns the source URL, update timestamps, and retrieval timestamp, which the agent mentions to the user. It explicitly separates the source update date from local access times.
+6. **Error & Failure Path Handling**:
+   - Simulated Timeout: Inputting a query containing the word `"timeout"` triggers a simulated API timeout.
+   - Connection/HTTP Failures: Handles connection issues gracefully, returning structured exceptions. The agent reports: *"I'm unable to reach the government information source right now. I don't want to guess or provide outdated information. Please try again shortly."*
+   - Schemes Not Found: Returns a `NOT_FOUND` error, making the agent report: *"I don't currently have verified information about that scheme in my government-scheme dataset, so I don't want to guess. You can check the relevant official government portal for the latest information."*
+   - Unrecognized Fields: Returns a `FIELD_NOT_AVAILABLE` error, making the agent report: *"I don't currently have verified information for that specific aspect of the scheme in my current dataset, so I don't want to guess. Please check the relevant official government portal."*
+7. **Example Voice Queries**:
+   - "What is APY?"
+   - "What are the eligibility requirements for PMJDY?"
+   - "What is a Mudra loan?"
+   - "Explain a fictional scheme XYZ"
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

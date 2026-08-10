@@ -1,5 +1,6 @@
 import logging
 import json
+import asyncio
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -19,6 +20,7 @@ from livekit.agents import (
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from db import get_caller, save_caller
+from schemes_data import lookup_scheme_db
 
 logger = logging.getLogger("agent")
 
@@ -37,9 +39,11 @@ Greet the user immediately and warmly:
 - Improve general banking and financial literacy (savings, budgeting, digital payments).
 - Raise awareness about common financial frauds and online scams, providing actionable security advice.
 
-# KNOWLEDGE
-- Deep knowledge of major government financial schemes (e.g., pension schemes like APY, insurance schemes like PMJJBY/PMSBY, and subsidy programs).
-- Understanding of general banking concepts, digital banking security, and safe online practices.
+# KNOWLEDGE & TOOL CALLS
+- Do NOT answer specific details about government financial schemes (such as eligibility criteria, benefits, premiums, application processes, or required documents) from memory.
+- You MUST call the `lookup_government_scheme` tool whenever the user asks for information about a specific government financial scheme (e.g. PMJDY, APY, PMJJBY, PMSBY, PMMY / PM Mudra, Stand-Up India, JanSamarth).
+- When explaining the retrieved information, tell the user the official source and source update date. Say: "According to information sourced from the official government portal [source], last updated on [source_updated_at]..." Keep it clean and easy to say. Do NOT refer to retrieved_at as the time the official government website was accessed.
+- Summarize long text naturally for a spoken conversation. Do not read raw lists or complex tables.
 - Knowledge stops at: Personal account details, transaction processing, and making final approvals or commitments on behalf of any institution.
 
 # LANGUAGE
@@ -50,13 +54,17 @@ Greet the user immediately and warmly:
 # GUARDRAILS
 - **CRITICAL**: Never ask for or accept an OTP (One-Time Password), PIN, password, or bank account number.
 - **CRITICAL**: Never promise or guarantee scheme approval, loan disbursement, or financial payouts.
+- **CRITICAL**: If the lookup tool returns success=false with NOT_FOUND error, say: "I don't currently have verified information about that scheme in my government-scheme dataset, so I don't want to guess. You can check the relevant official government portal for the latest information." Do NOT say: "I checked the government source and it doesn't exist."
+- **CRITICAL**: If the lookup tool returns success=false with FIELD_NOT_AVAILABLE, say: "I don't currently have verified information for that specific aspect of the scheme in my current dataset, so I don't want to guess. Please check the relevant official government portal."
+- **CRITICAL**: If the lookup tool fails due to TIMEOUT or CONNECTION_ERROR, say: "I'm unable to reach the government information source right now. I don't want to guess or provide outdated information. Please try again shortly."
+- **CRITICAL**: Never claim: "You are approved." Instead, say: "Based on the information available, you may meet the published criteria, but final eligibility is determined by the relevant authority."
 - **Escalation Script / Refusal**: If a user asks about account-specific actions, transaction processing, or demands approvals, say: "For your security, I cannot ask for or process OTPs, PINs, or account details, and I cannot guarantee scheme approvals. Please contact your official bank branch directly for assistance with your account."
 
 # MEMORY & CONSENT GUARDRAILS
 - **CRITICAL**: You MUST ask the caller for permission before saving or remembering any information. For example, say: "Would it be alright if I remember your name and the schemes we discussed for next time?"
 - If the caller says NO, do NOT save their information and do NOT call the save tool.
 - If the caller says YES, call the `save_caller_details` tool to store their name, language, and eligibility/checked schemes facts.
-- Facts to save: Schemes already checked (e.g. APY, PMJJBY, PMSBY), eligibility answers. Do NOT store account or ID numbers.
+- Facts to save: Schemes already checked (e.g. APY, PMJJBY, PMSBY, PMMY), eligibility answers. Do NOT store account or ID numbers.
 
 # STYLE
 - Keep responses short and conversational, suitable for a spoken voice assistant.
@@ -128,6 +136,55 @@ class Assistant(Agent):
         }
         save_caller(user_id, name, language_preference, facts)
         return "Successfully saved details."
+
+    @function_tool
+    async def lookup_government_scheme(
+        self,
+        scheme_name: str,
+        information_requested: str,
+    ) -> str:
+        """Use this tool whenever the user asks about a specific Indian government financial scheme, including: overview, eligibility, benefits, premiums, loan categories, application process, required documents, or current/latest status.
+        
+        Use this tool instead of relying on LLM memory. If the scheme cannot be found, the tool returns NOT_FOUND. If information is not available, the tool returns FIELD_NOT_AVAILABLE. Do not invent answers. If the user asks a general financial-literacy question that does not refer to a specific government scheme, do not call this tool.
+        
+        Args:
+            scheme_name: The name, abbreviation, or alias of the government scheme (e.g., 'PMJDY', 'APY', 'PMJJBY', 'PMSBY', 'PMMY', 'PM Mudra', 'Mudra loan', 'Stand-Up India', 'JanSamarth').
+            information_requested: The specific aspect requested (e.g. 'overview', 'eligibility', 'benefits', 'application', 'documents', 'latest_status').
+        """
+        logger.info(f"lookup_government_scheme called: scheme={scheme_name}, info={information_requested}")
+        
+        # Financial safety: Block if user query requests OTP, PIN, password, or account check
+        sensitive_keywords = ["otp", "pin", "password", "cvv", "aadhaar", "pan", "account number", "card number"]
+        if any(kw in scheme_name.lower() or kw in information_requested.lower() for kw in sensitive_keywords):
+            logger.warning("Blocked sensitive credentials lookup via tool.")
+            return json.dumps({
+                "success": False,
+                "error_type": "SECURITY_REFUSAL",
+                "message": "Sensitive credentials checks are prohibited."
+            })
+
+        try:
+            # Enforce 8-second HTTP timeout equivalent for external source simulation
+            result = await asyncio.wait_for(
+                lookup_scheme_db(scheme_name, information_requested),
+                timeout=8.0
+            )
+            logger.info(f"lookup_government_scheme result: {result.get('success')}")
+            return json.dumps(result)
+        except asyncio.TimeoutError:
+            logger.error("lookup_government_scheme timed out")
+            return json.dumps({
+                "success": False,
+                "error_type": "TIMEOUT",
+                "message": "Government data source timed out."
+            })
+        except Exception as e:
+            logger.error(f"lookup_government_scheme error: {e}")
+            return json.dumps({
+                "success": False,
+                "error_type": "CONNECTION_ERROR",
+                "message": f"Connection error or API unavailable: {str(e)}"
+            })
 
 
 server = AgentServer()

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
-import { useAgent, useSessionContext, useSessionMessages, useLocalParticipant } from '@livekit/components-react';
+import { useAgent, useSessionContext, useSessionMessages, useLocalParticipant, useChat } from '@livekit/components-react';
 import { AlertTriangle } from 'lucide-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
 import {
@@ -187,6 +187,7 @@ export function AgentSessionView_01({
   const { localParticipant } = useLocalParticipant();
   const isMicrophoneEnabled = localParticipant.isMicrophoneEnabled;
   const t = TRANSLATIONS[lang];
+  const { send } = useChat();
 
   const controls: AgentControlBarControls = {
     leave: true,
@@ -195,6 +196,21 @@ export function AgentSessionView_01({
     camera: supportsVideoInput,
     screenShare: supportsScreenShare,
   };
+
+  // Automatically send stored initial question when connected
+  useEffect(() => {
+    if (session.isConnected) {
+      const initialQuestion = window.sessionStorage.getItem('finbuddy_initial_question');
+      if (initialQuestion) {
+        window.sessionStorage.removeItem('finbuddy_initial_question');
+        const timeoutId = setTimeout(() => {
+          send(initialQuestion).catch(console.error);
+          setChatOpen(true);
+        }, 1200);
+        return () => clearTimeout(timeoutId);
+      }
+    }
+  }, [session.isConnected, send]);
 
   useEffect(() => {
     const lastMessage = messages.at(-1);

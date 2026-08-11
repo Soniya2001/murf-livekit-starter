@@ -71,27 +71,48 @@ Greet the user immediately and warmly:
 - Use simple punctuation; avoid bullet lists with complex symbols or emojis that are hard to speak.
 - Maintain a comfortable conversational pace.
 - If the user is silent, gently check in: "Are you still there? Let me know how I can help."
+
+# OPT-OUT / STOP CALL GUARDRAIL
+If the user expresses a desire to stop, end, or opt out of the call (using phrases like "stop", "don't call me", "end the call", "I don't want this", "goodbye", "remove me", or any translated equivalent), you MUST immediately respond with:
+"Understood. I won't continue this call and will make sure you are not contacted again. Thank you, and have a good day."
+Do NOT ask any follow-up questions, do NOT try to convince them, and do NOT continue the conversation.
 """
 
 
 class Assistant(Agent):
-    def __init__(self, user_id: str = "default_user", initial_info: str = "") -> None:
+    def __init__(self, user_id: str = "default_user", initial_info: str = "", is_sip: bool = False) -> None:
         instructions = SYSTEM_PROMPT
         
-        # If returning user info is present, inject greeting instruction
-        if initial_info:
-            try:
-                caller_data = json.loads(initial_info)
-                name = caller_data.get("name", "there")
-                facts = caller_data.get("facts", {})
-                schemes = facts.get("schemes_checked", "N/A")
-                instructions = instructions.replace(
-                    'Greet the user immediately and warmly:\n"Hello! I am your Financial Services Assistant. How can I help you learn about financial schemes, banking, or staying safe from fraud today?"',
-                    f'Greet the user back by name, welcome them back, and continue from last time. For example: "Hello {name}, welcome back! Last time we spoke about {schemes}. How are you doing with that or did it help?"'
-                )
-                instructions += f"\n\n# RETURNING USER PROFILE\n{initial_info}\n"
-            except Exception:
-                pass
+        if is_sip:
+            greeting = "Hello, this is FinBuddy, an AI financial information assistant. I'm calling to inform you about newly launched and updated government financial schemes, including the Pradhan Mantri MUDRA Yojana. To stop this call and make sure you are not contacted again, please tell 1. To continue this call and hear about the schemes, please tell 2."
+            if initial_info:
+                try:
+                    caller_data = json.loads(initial_info)
+                    name = caller_data.get("name")
+                    if name:
+                        greeting = f"Hello {name}, this is FinBuddy, an AI financial information assistant. I'm calling to inform you about newly launched and updated government financial schemes, including the Pradhan Mantri MUDRA Yojana. To stop this call and make sure you are not contacted again, please tell 1. To continue this call and hear about the schemes, please tell 2."
+                except Exception:
+                    pass
+            instructions = instructions.replace(
+                'Greet the user immediately and warmly:\n"Hello! I am your Financial Services Assistant. How can I help you learn about financial schemes, banking, or staying safe from fraud today?"',
+                f'You must greet the user immediately with this exact greeting:\n"{greeting}"'
+            )
+            instructions += "\n\n# OUTBOUND CALL ENVIRONMENT\n- This is an unsolicited outbound call. You must respect the user's consent and opt-out requests instantly. Never ask for or mention sensitive details like OTP, PIN, password, bank account, Aadhaar, PAN, card numbers, or credentials."
+        else:
+            # If returning user info is present, inject greeting instruction
+            if initial_info:
+                try:
+                    caller_data = json.loads(initial_info)
+                    name = caller_data.get("name", "there")
+                    facts = caller_data.get("facts", {})
+                    schemes = facts.get("schemes_checked", "N/A")
+                    instructions = instructions.replace(
+                        'Greet the user immediately and warmly:\n"Hello! I am your Financial Services Assistant. How can I help you learn about financial schemes, banking, or staying safe from fraud today?"',
+                        f'Greet the user back by name, welcome them back, and continue from last time. For example: "Hello {name}, welcome back! Last time we spoke about {schemes}. How are you doing with that or did it help?"'
+                    )
+                    instructions += f"\n\n# RETURNING USER PROFILE\n{initial_info}\n"
+                except Exception:
+                    pass
                 
         instructions += f"\n\n# CURRENT SESSION INFO\n- Current User ID: {user_id}\n"
         super().__init__(instructions=instructions)
@@ -208,6 +229,7 @@ async def my_agent(ctx: JobContext):
     # Look up user if they already exist
     user_id = "default_user"
     initial_info = ""
+    is_sip = ctx.room.name.startswith("sip_room_")
     try:
         import asyncio
         remote_participant = None
@@ -238,8 +260,8 @@ async def my_agent(ctx: JobContext):
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
         tts=murf.TTS(
-                voice="Karthikeyan", 
-                locale="ta-IN",
+                voice="Anisha", 
+                locale="en-IN",
                 style="Conversational",
                 tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
                 text_pacing=True
@@ -258,6 +280,38 @@ async def my_agent(ctx: JobContext):
         transcript = ev.transcript.strip().lower()
         if not transcript:
             return
+
+        if is_sip:
+            opt_out_phrases = ["stop", "don't call me", "dont call me", "end the call", "i don't want this", "i dont want this", "goodbye", "remove me", "one", "1"]
+            continue_phrases = ["two", "2"]
+            if any(phrase in transcript for phrase in opt_out_phrases):
+                logger.info(f"Opt-out detected in transcription: '{transcript}'. Shutting down call...")
+                async def shutdown():
+                    try:
+                        session.interrupt()
+                        session.clear_user_turn()
+                        await session.say("Understood. I won't continue this call and will make sure you are not contacted again. Thank you, and have a good day.", allow_interruptions=False)
+                        await asyncio.sleep(5.0)
+                    except Exception as e:
+                        logger.error(f"Error during opt-out greeting: {e}")
+                    finally:
+                        logger.info("Disconnecting room due to user opt-out.")
+                        await ctx.room.disconnect()
+                asyncio.create_task(shutdown())
+                ev.transcript = ""
+                return
+            elif any(phrase in transcript for phrase in continue_phrases):
+                logger.info(f"Continue detected in transcription: '{transcript}'. Prompting user...")
+                async def continue_call():
+                    try:
+                        session.interrupt()
+                        session.clear_user_turn()
+                        await session.say("Great! Let's continue. I can explain Indian government financial schemes such as PMJDY, APY, PMSBY, PMJJBY, and PM MUDRA Yojana. What would you like to learn about?", allow_interruptions=True)
+                    except Exception as e:
+                        logger.error(f"Error during continue: {e}")
+                asyncio.create_task(continue_call())
+                ev.transcript = ""
+                return
 
         # Check for Devanagari script characters (native Hindi)
         has_devanagari = any(ord(c) >= 0x0900 and ord(c) <= 0x097F for c in transcript)
@@ -325,7 +379,7 @@ async def my_agent(ctx: JobContext):
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(user_id=user_id, initial_info=initial_info),
+        agent=Assistant(user_id=user_id, initial_info=initial_info, is_sip=is_sip),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -341,6 +395,52 @@ async def my_agent(ctx: JobContext):
 
     # Join the room and connect to the user
     await ctx.connect()
+
+    @ctx.room.on("dtmf_received")
+    def on_dtmf_received(participant: rtc.RemoteParticipant, code: int, digit: str):
+        logger.info(f"DTMF received from participant {participant.identity}: code={code}, digit={digit}")
+        if is_sip and digit == "1":
+            logger.info("DTMF 1 received. Initiating opt-out shutdown...")
+            async def shutdown():
+                try:
+                    session.interrupt()
+                    session.clear_user_turn()
+                    await session.say("Understood. I won't continue this call and will make sure you are not contacted again. Thank you, and have a good day.", allow_interruptions=False)
+                    await asyncio.sleep(5.0)
+                except Exception as e:
+                    logger.error(f"Error during opt-out: {e}")
+                finally:
+                    await ctx.room.disconnect()
+            asyncio.create_task(shutdown())
+            
+        elif is_sip and digit == "2":
+            logger.info("DTMF 2 received. Continuing call...")
+            async def continue_call():
+                try:
+                    session.interrupt()
+                    session.clear_user_turn()
+                    await session.say("Great! Let's continue. I can explain Indian government financial schemes such as PMJDY, APY, PMSBY, PMJJBY, and PM MUDRA Yojana. What would you like to learn about?", allow_interruptions=True)
+                except Exception as e:
+                    logger.error(f"Error during continue: {e}")
+            asyncio.create_task(continue_call())
+
+    if is_sip:
+        greeting_text = "Hello, this is FinBuddy, an AI financial information assistant. I'm calling to inform you about newly launched and updated government financial schemes, including the Pradhan Mantri MUDRA Yojana. To stop this call and make sure you are not contacted again, please tell 1. To continue this call and hear about the schemes, please tell 2."
+        if initial_info:
+            try:
+                caller_data = json.loads(initial_info)
+                name = caller_data.get("name")
+                if name:
+                    greeting_text = f"Hello {name}, this is FinBuddy, an AI financial information assistant. I'm calling to inform you about newly launched and updated government financial schemes, including the Pradhan Mantri MUDRA Yojana. To stop this call and make sure you are not contacted again, please tell 1. To continue this call and hear about the schemes, please tell 2."
+            except Exception:
+                pass
+
+        async def greet_sip():
+            await asyncio.sleep(0.5)
+            logger.info("SIP Participant connected. Speaking outbound greeting immediately...")
+            await session.say(greeting_text, allow_interruptions=True)
+
+        asyncio.create_task(greet_sip())
 
 
 if __name__ == "__main__":

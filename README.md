@@ -260,6 +260,93 @@ For deeper documentation on each part, see:
 
 ---
 
+# 10 Days of Voice Agents – VoiceForBharat Edition
+
+This section tracks the daily progress of **FinBuddy**, our AI Financial Voice Assistant, implemented during the "10 Days of Voice Agents" series:
+
+### Day 2 – Multilingual Support & Voice Switching
+- Added Hindi, Tamil, Telugu, and Indian English language options to the LLM instructions.
+- Implemented real-time dynamic language detection using custom text classifiers and romanized Hinglish/native keyboard character scanners.
+- Integrated Murf Falcon TTS with dynamic model configuration updating (updating locale, gender, style, and voice characteristics on-the-fly depending on the spoken language).
+
+### Day 3 – Beautiful Multilingual Web Client
+- Customized the web client UI for a premium experience, including a custom FinBuddy avatar, logo, brand assets, and custom gradients.
+- Added translation dictionary infrastructure to localize buttons, indicators, headings, and interface strings across all supported languages (Tamil, Telugu, Hindi, English).
+- Created a dynamic card layout welcome dashboard showing government financial scheme quick-links.
+
+### Day 4 – SQLite Caller Memory & Consent
+- Designed a SQLite caller database (`finbuddy_memory.db`) to persist visitor history.
+- Integrated a consent-based memory system (`db.py` and tools). If the user consents, the agent uses the `save_caller_details` tool to store their name, spoken language, and checked eligibility criteria.
+- Personalized subsequent greetings dynamically for return callers.
+
+### Day 5 – Government Scheme Lookup Tool
+- Created the government schemes dataset (`schemes_data.py`) listing accurate information, benefits, and eligibility rules for key programs (PM MUDRA Yojana, APY, PMJDY, PMSBY, PMJJBY).
+- Integrated a local lookup tool allowing the LLM to dynamically retrieve official information to prevent hallucinations.
+- Added 18 unit tests (`tests/test_schemes.py`) to verify the accuracy of scheme matching, query handling, and safety guardrails.
+
+---
+
+# Day 6 – Outbound Voice Calls
+
+FinBuddy now supports outbound telephony calls using LiveKit's SIP service. This enables calling a controlled phone number or SIP URI directly from the backend to deliver FinBuddy's interactive financial services.
+
+## SIP Architecture
+
+```mermaid
+flowchart LR
+    A[FinBuddy Agent] <-->|Room Session| B[LiveKit Server]
+    B <-->|SIP Trunk| C[Linphone / SIP Provider]
+    C <-->|PSTN / SIP Network| D[Phone / SIP Client]
+    D <-->|User Audio| E[User]
+```
+
+1. The backend triggers an outbound call using the LiveKit server's SIP outbound API.
+2. LiveKit creates an RTC room and sends a SIP invitation through the configured trunk.
+3. The destination client (e.g. Linphone or phone number) answers, connecting them as a SIP participant to the room.
+4. The running `agent.py` worker automatically detects the new SIP participant and joins the room.
+5. The agent starts the session and interacts directly with the user over the phone call.
+
+## Environment Variables
+
+Copy `backend/.env.example` to `backend/.env.local` and set the following keys:
+
+- `LIVEKIT_SIP_TRUNK_ID`: The ID of your pre-configured SIP Outbound Trunk (e.g., `ST_JEV7nP9yNrzX`).
+- `OUTBOUND_CALL_TO`: The default destination phone number or SIP URI to call (e.g., `sip:soniyab@sip.linphone.org` or `+15105550100`).
+- `LINPHONE_SIP_URI` / `SIP_OUTBOUND_HOST`: Used for SIP provider credentials setup.
+
+> [!WARNING]
+> Only call numbers/SIP endpoints that you own or have explicit permission to contact.
+
+## Initiating an Outbound Call
+
+1. **Start the Backend Agent**:
+   ```bash
+   cd backend
+   uv run python src/agent.py dev
+   ```
+
+2. **Trigger the Outbound Call**:
+   Run the CLI utility in a separate terminal:
+   ```bash
+   cd backend
+   # Initiate call using the default OUTBOUND_CALL_TO env variable
+   uv run python src/outbound_call.py
+   
+   # Or override destination manually
+   uv run python src/outbound_call.py --to "sip:soniyab@sip.linphone.org"
+   ```
+
+## Key Capabilities & Safety
+
+- **Immediate Answering & No-Delay Greeting**: When the caller answers the phone, the agent immediately starts the greeting. By utilizing a specific room name prefix (`sip_room_`), the agent registers itself as a SIP session on startup, pre-warming the Gemini LLM and Murf Falcon TTS engine for instant delivery.
+- **DTMF Keypress & Voice Commands (IVR)**: Callers can interact using their telephone keypad (DTMF) or by speaking:
+  - **Press/Say 1**: Instantly triggers the privacy opt-out flow.
+  - **Press/Say 2**: Continues the call to hear about schemes like PM MUDRA Yojana, APY, PMJDY, and more.
+- **Programmatic Opt-Out & Auto-Hangup**: If an opt-out choice is detected, the agent interrupts the active conversation flow (`session.interrupt()`), clears the queue (`session.clear_user_turn()`), speaks a polite farewell confirmation: *"Understood. I won't continue this call and will make sure you are not contacted again. Thank you, and have a good day."*, and hangs up the call programmatically.
+- **Financial Safety**: Strict guardrails are active on the phone call, refusing to collect or mention passwords, OTPs, Aadhaar, PAN, card numbers, or PINs.
+
+---
+
 ## Links
 
 - [Murf API Docs](https://murf.ai/api/docs)

@@ -1,6 +1,9 @@
 import logging
 import json
 import asyncio
+import re
+from datetime import datetime
+import uuid
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -19,7 +22,7 @@ from livekit.agents import (
 )
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
-from db import get_caller, save_caller
+from db import get_caller, save_caller, create_escalation
 from schemes_data import lookup_scheme_db
 
 logger = logging.getLogger("agent")
@@ -46,13 +49,43 @@ Greet the user immediately and warmly:
 - Summarize long text naturally for a spoken conversation. Do not read raw lists or complex tables.
 - Knowledge stops at: Personal account details, transaction processing, and making final approvals or commitments on behalf of any institution.
 
-# LANGUAGE
-- Mirror the user's mix of languages (e.g., English, Tamil, Telugu, Hindi, or a mix) naturally.
-- Maintain a polite, respectful, and helpful tone.
-- Keep the language simple and accessible, avoiding complex banking jargon.
+# HUMAN HELP ESCALATION & CONSENT
+- Use `create_escalation` ONLY when:
+  1. The caller explicitly asks to speak with a human/support team.
+  2. The caller reports a suspected financial scam, fraud, or possible unauthorized activity.
+  3. The caller needs account-specific assistance that you cannot access (like check account status).
+  4. The caller needs an action that you are not authorized to perform.
+  5. The caller's issue cannot be safely resolved with available scheme info.
+  6. The caller needs institutional support from a bank.
+- Do NOT call it for:
+  1. Normal financial-literacy questions (e.g., general definitions).
+  2. Basic government-scheme explanations.
+  3. Questions you can answer safely.
+- **CRITICAL - CONSENT BEFORE ESCALATION**: You must obtain explicit user consent before calling `create_escalation`. Tell the user:
+  1. Why human help may be useful.
+  2. What information will be shared (e.g., caller name, summary, urgency, language, preferred contact method).
+  3. Reassure them that you won't share sensitive credentials (OTP, PIN, password, account number).
+  4. Ask if they want you to create the request and ask for their preferred contact method (phone or email).
+  Example consent script: "I can create a request for human assistance. I would share a short summary of what happened, what I have already checked, your preferred language, and how you'd like to be contacted. I won't share your OTP, PIN, password, account number, or other sensitive banking information. Would you like me to create the request?"
+  - Speak this consent request in the user's current/detected language.
+  - If the user refuses (says "no", "don't", "not now", "I don't want that"), do NOT call `create_escalation`. Respond with: "Understood. I won't create a human-help request. I can still help with general financial information." (or translated equivalent).
+  - Only when they agree and provide preferred follow-up method (phone or email), call `create_escalation`.
+  - Once created, state: "Your request has been created with reference ID FIN-XXXX (read the actual returned reference ID). It is currently marked as [urgency] priority. A human support process can review the request according to the available support workflow. You've selected [follow-up method] as your preferred follow-up method. I can't guarantee an immediate response."
+
+# LANGUAGE & SCRIPTS
+- Always detect the user's current language and respond in the same language unless the user explicitly asks for another language.
+- Always write non-English languages using their correct native script:
+  - English -> Latin script (e.g., "How can I help you?")
+  - Hindi -> Devanagari script (e.g., "नमस्ते, मैं आपकी कैसे मदद कर सकता हूँ?") - NEVER write Hindi in Romanized script (e.g. "Namaste, main aapki kaise...").
+  - Tamil -> Tamil script (e.g., "வணக்கம், நான் உங்களுக்கு எப்படி உதவலாம்?") - NEVER write Tamil in Romanized script (e.g. "Vanakkam, naan ungalukku...").
+  - Telugu -> Telugu script (e.g., "నమస్కారం, నేను మీకు ఎలా సహాయం చేయవచ్చు?") - NEVER write Telugu in Romanized script (e.g. "Namaskaram, nenu meeku...").
+- The user's speech may be code-mixed or Romanized (e.g. "PMJDY pathi sollunga", "PMMY ke baare mein batao"). Understand these naturally, but respond in the appropriate native script.
+- For code-mixed conversations, preserve commonly used English technical/financial terms when natural (e.g., "UPI payment", "OTP", "bank account"), but keep the surrounding Indian language in its native script.
+- If the user explicitly asks you to speak in a specific language (e.g., "Speak in English", "தமிழில் பேசுங்கள்", "हिंदी में बात करें", "తెలుగులో మాట్లాడండి"), you must follow that instruction and continue in that language.
 
 # GUARDRAILS
-- **CRITICAL**: Never ask for or accept an OTP (One-Time Password), PIN, password, or bank account number.
+- **CRITICAL**: Never ask for or accept an OTP (One-Time Password), PIN, password, bank account number, CVV, Aadhaar, or PAN.
+- **CRITICAL**: If the user accidentally shares sensitive info (e.g., "my account number is 123456" or "my OTP is 123"), warn them immediately: "For your security, please do not share OTPs, PINs, passwords, or banking credentials with me." Do NOT repeat or store this information anywhere!
 - **CRITICAL**: Never promise or guarantee scheme approval, loan disbursement, or financial payouts.
 - **CRITICAL**: If the lookup tool returns success=false with NOT_FOUND error, say: "I don't currently have verified information about that scheme in my government-scheme dataset, so I don't want to guess. You can check the relevant official government portal for the latest information." Do NOT say: "I checked the government source and it doesn't exist."
 - **CRITICAL**: If the lookup tool returns success=false with FIELD_NOT_AVAILABLE, say: "I don't currently have verified information for that specific aspect of the scheme in my current dataset, so I don't want to guess. Please check the relevant official government portal."
@@ -157,6 +190,118 @@ class Assistant(Agent):
         }
         save_caller(user_id, name, language_preference, facts)
         return "Successfully saved details."
+
+    @function_tool
+    async def create_escalation(
+        self,
+        user_id: str,
+        issue_summary: str,
+        what_happened: str,
+        agent_checks: str,
+        urgency: str,
+        language: str,
+        preferred_follow_up: str,
+        caller_name: str = None
+    ) -> str:
+        """Create a human escalation request when genuine help is needed.
+        
+        Use this tool when:
+        - The caller explicitly asks to speak with a human.
+        - The caller reports a suspected financial scam or fraud.
+        - The caller needs account-specific assistance that FinBuddy cannot provide.
+        - The caller needs an action that FinBuddy is not authorized to perform.
+        - The caller's issue cannot be safely resolved with available government-scheme information.
+        - The caller needs institutional support from a bank or authorized financial service provider.
+        
+        Do NOT call this for:
+        - Normal financial-literacy questions.
+        - Basic government-scheme explanations.
+        - Questions that FinBuddy can answer safely.
+        - General information requests.
+        
+        CRITICAL: NEVER create an escalation request without obtaining explicit user consent first.
+        
+        Args:
+            user_id: The unique identifier/phone number of the caller.
+            issue_summary: A short summary of the issue (e.g. Suspected fraudulent UPI transaction).
+            what_happened: A description of what happened. Do NOT include sensitive info like OTP, PIN, passwords, account numbers, card credentials, Aadhaar, or PAN.
+            agent_checks: What the agent checked or provided (e.g. Provided general scam-safety guidance).
+            urgency: The urgency level of the request. Must be 'low', 'medium', or 'high'.
+            language: The language the user prefers (e.g. Tamil, Telugu, Hindi, English).
+            preferred_follow_up: Preferred contact channel ('phone' or 'email').
+            caller_name: Optional name of the caller if known or provided.
+        """
+        logger.info(f"create_escalation tool called for user {user_id}")
+        
+        # 1. Input Validation
+        urgency = (urgency or "low").lower()
+        if urgency not in ["low", "medium", "high"]:
+            urgency = "low"
+            
+        preferred_follow_up = (preferred_follow_up or "phone").lower()
+        if preferred_follow_up not in ["phone", "email"]:
+            preferred_follow_up = "phone"
+            
+        # 2. Remove/Reject Sensitive Information
+        sensitive_pattern = re.compile(
+            r'\b(\d{4,6})\b|\b(\d{9,18})\b|otp|pin|password|cvv|aadhaar|pan|card number',
+            re.IGNORECASE
+        )
+        
+        # Helper to scrub sensitive information
+        def scrub(text):
+            if not text:
+                return ""
+            # Simple scrub of potential account numbers (9-18 digits) or PIN/OTP (4-6 digits)
+            text = re.sub(r'\b\d{9,18}\b', '[SCRUBBED ACCOUNT/CARD]', text)
+            text = re.sub(r'\b\d{4,6}\b', '[SCRUBBED CREDENTIAL]', text)
+            # Scrub keywords
+            for word in ["otp", "pin", "password", "cvv", "aadhaar", "pan"]:
+                text = re.sub(rf'\b{word}\b\s*\S*', '[SCRUBBED SENSITIVE]', text, flags=re.IGNORECASE)
+            return text
+
+        issue_summary = scrub(issue_summary)
+        what_happened = scrub(what_happened)
+        agent_checks = scrub(agent_checks)
+        
+        # Try to resolve caller name from db if not explicitly provided
+        if not caller_name:
+            caller = get_caller(user_id)
+            if caller:
+                caller_name = caller.get("name")
+        if not caller_name:
+            caller_name = "Anonymous Caller"
+
+        # 3. Generate a unique reference ID in format FIN-YYYYMMDD-XXXX
+        today = datetime.now().strftime("%Y%m%d")
+        random_suffix = str(uuid.uuid4().int)[:4]
+        reference_id = f"FIN-{today}-{random_suffix}"
+        
+        # 4. Save the request to SQLite
+        res = create_escalation(
+            user_id=user_id,
+            reference_id=reference_id,
+            caller_name=caller_name,
+            issue_summary=issue_summary,
+            what_happened=what_happened,
+            agent_checks=agent_checks,
+            urgency=urgency,
+            language=language,
+            preferred_follow_up=preferred_follow_up,
+            status="OPEN"
+        )
+        
+        if res.get("success"):
+            return json.dumps({
+                "success": True,
+                "reference_id": reference_id,
+                "status": "OPEN"
+            })
+        else:
+            return json.dumps({
+                "success": False,
+                "error": res.get("error", "Failed to save request")
+            })
 
     @function_tool
     async def lookup_government_scheme(
@@ -353,7 +498,20 @@ async def my_agent(ctx: JobContext):
         # Check detected language from STT event
         detected_lang = (getattr(ev, "language", "") or "").lower()
 
-        if has_tamil or "ta" in detected_lang or words.intersection(tamil_keywords):
+        # Handle explicit override requests
+        if "speak in english" in transcript:
+            logger.info("Manual override to English detected.")
+            session.tts.update_options(voice="Anisha", locale="en-IN", style="Conversation")
+        elif "தமிழில் பேசுங்கள்" in transcript or "tamilil pesungal" in transcript or "speak in tamil" in transcript:
+            logger.info("Manual override to Tamil detected.")
+            session.tts.update_options(voice="Karthikeyan", locale="ta-IN", style="Conversational")
+        elif "हिंदी में बात करें" in transcript or "hindi mein baat karen" in transcript or "speak in hindi" in transcript:
+            logger.info("Manual override to Hindi detected.")
+            session.tts.update_options(voice="Anisha", locale="hi-IN", style="Conversation")
+        elif "తెలుగులో మాట్లాడండి" in transcript or "telugulo matladandi" in transcript or "speak in telugu" in transcript:
+            logger.info("Manual override to Telugu detected.")
+            session.tts.update_options(voice="Anusha", locale="te-IN", style="Conversational")
+        elif has_tamil or "ta" in detected_lang or words.intersection(tamil_keywords):
             logger.info(f"Tamil language detected (lang: {detected_lang}). Switching TTS to Karthikeyan (ta-IN).")
             session.tts.update_options(voice="Karthikeyan", locale="ta-IN", style="Conversational")
         elif has_telugu or "te" in detected_lang or words.intersection(telugu_keywords):
@@ -365,6 +523,7 @@ async def my_agent(ctx: JobContext):
         else:
             logger.info(f"English language detected (lang: {detected_lang}). Switching TTS to Anisha (en-IN).")
             session.tts.update_options(voice="Anisha", locale="en-IN", style="Conversation")
+
 
     #     llm=openai.realtime.RealtimeModel(voice="marin")
     # )

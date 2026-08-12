@@ -284,66 +284,43 @@ This section tracks the daily progress of **FinBuddy**, our AI Financial Voice A
 - Integrated a local lookup tool allowing the LLM to dynamically retrieve official information to prevent hallucinations.
 - Added 18 unit tests (`tests/test_schemes.py`) to verify the accuracy of scheme matching, query handling, and safety guardrails.
 
+### Day 6 – Outbound Voice Calls
+- Added outbound telephony calling using LiveKit SIP integration.
+- Supported immediate greetings on connection, DTMF keypad support (Key 1 to opt out/Key 2 to continue), and auto-hangup.
+
+### Day 7 – Human-Help Escalation System
+- Added a robust human-help escalation system allowing FinBuddy to hand off calls to human representatives when required.
+- Implemented an `escalation_requests` SQLite table preserving caller facts while preventing sensitive credentials (OTP, PIN, passwords, account numbers) from ever being stored.
+- Built a `create_escalation` LiveKit function tool with parameter validation, security scrubbing, and unique reference ID generation (`FIN-YYYYMMDD-XXXX`).
+- Mandated a verbal multilingual consent flow where the caller must agree to the shared parameters before escalation.
+- Created an administrative support dashboard `/escalations` to group, search, and update escalation statuses (`OPEN`, `IN_REVIEW`, `RESOLVED`, `CLOSED`).
+- Extended coverage to outbound SIP calls and added comprehensive unit tests verifying data safety and escalation triggers.
+
 ---
 
-# Day 6 – Outbound Voice Calls
+## Escalation Database Schema
+The database contains the `escalation_requests` table with fields:
+- `id` (INTEGER, Primary Key Auto-Increment)
+- `reference_id` (TEXT, Unique)
+- `user_id` (TEXT)
+- `caller_name` (TEXT)
+- `issue_summary` (TEXT)
+- `what_happened` (TEXT)
+- `agent_checks` (TEXT)
+- `urgency` (TEXT)
+- `language` (TEXT)
+- `preferred_follow_up` (TEXT)
+- `status` (TEXT, Default 'OPEN')
+- `created_at` (TIMESTAMP, Default Current)
 
-FinBuddy now supports outbound telephony calls using LiveKit's SIP service. This enables calling a controlled phone number or SIP URI directly from the backend to deliver FinBuddy's interactive financial services.
+---
 
-## SIP Architecture
-
-```mermaid
-flowchart LR
-    A[FinBuddy Agent] <-->|Room Session| B[LiveKit Server]
-    B <-->|SIP Trunk| C[Linphone / SIP Provider]
-    C <-->|PSTN / SIP Network| D[Phone / SIP Client]
-    D <-->|User Audio| E[User]
+## Run Escalation Tests
+To execute the backend test suites including the new escalation tests:
+```bash
+cd backend
+.venv\Scripts\pytest
 ```
-
-1. The backend triggers an outbound call using the LiveKit server's SIP outbound API.
-2. LiveKit creates an RTC room and sends a SIP invitation through the configured trunk.
-3. The destination client (e.g. Linphone or phone number) answers, connecting them as a SIP participant to the room.
-4. The running `agent.py` worker automatically detects the new SIP participant and joins the room.
-5. The agent starts the session and interacts directly with the user over the phone call.
-
-## Environment Variables
-
-Copy `backend/.env.example` to `backend/.env.local` and set the following keys:
-
-- `LIVEKIT_SIP_TRUNK_ID`: The ID of your pre-configured SIP Outbound Trunk (e.g., `ST_JEV7nP9yNrzX`).
-- `OUTBOUND_CALL_TO`: The default destination phone number or SIP URI to call (e.g., `sip:soniyab@sip.linphone.org` or `+15105550100`).
-- `LINPHONE_SIP_URI` / `SIP_OUTBOUND_HOST`: Used for SIP provider credentials setup.
-
-> [!WARNING]
-> Only call numbers/SIP endpoints that you own or have explicit permission to contact.
-
-## Initiating an Outbound Call
-
-1. **Start the Backend Agent**:
-   ```bash
-   cd backend
-   uv run python src/agent.py dev
-   ```
-
-2. **Trigger the Outbound Call**:
-   Run the CLI utility in a separate terminal:
-   ```bash
-   cd backend
-   # Initiate call using the default OUTBOUND_CALL_TO env variable
-   uv run python src/outbound_call.py
-   
-   # Or override destination manually
-   uv run python src/outbound_call.py --to "sip:soniyab@sip.linphone.org"
-   ```
-
-## Key Capabilities & Safety
-
-- **Immediate Answering & No-Delay Greeting**: When the caller answers the phone, the agent immediately starts the greeting. By utilizing a specific room name prefix (`sip_room_`), the agent registers itself as a SIP session on startup, pre-warming the Gemini LLM and Murf Falcon TTS engine for instant delivery.
-- **DTMF Keypress & Voice Commands (IVR)**: Callers can interact using their telephone keypad (DTMF) or by speaking:
-  - **Press/Say 1**: Instantly triggers the privacy opt-out flow.
-  - **Press/Say 2**: Continues the call to hear about schemes like PM MUDRA Yojana, APY, PMJDY, and more.
-- **Programmatic Opt-Out & Auto-Hangup**: If an opt-out choice is detected, the agent interrupts the active conversation flow (`session.interrupt()`), clears the queue (`session.clear_user_turn()`), speaks a polite farewell confirmation: *"Understood. I won't continue this call and will make sure you are not contacted again. Thank you, and have a good day."*, and hangs up the call programmatically.
-- **Financial Safety**: Strict guardrails are active on the phone call, refusing to collect or mention passwords, OTPs, Aadhaar, PAN, card numbers, or PINs.
 
 ---
 

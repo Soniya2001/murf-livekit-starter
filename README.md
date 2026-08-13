@@ -296,6 +296,13 @@ This section tracks the daily progress of **FinBuddy**, our AI Financial Voice A
 - Created an administrative support dashboard `/escalations` to group, search, and update escalation statuses (`OPEN`, `IN_REVIEW`, `RESOLVED`, `CLOSED`).
 - Extended coverage to outbound SIP calls and added comprehensive unit tests verifying data safety and escalation triggers.
 
+### Day 8 – Call Outcome State Tracking & Analytics Dashboard
+- Designed and implemented call outcome state tracking in `agent.py` to record detailed outcome metrics (`outcome`, `success_reason`, `scheme_name`, `information_requested`, `duration_seconds`, `language`).
+- Configured explicit success conditions mapping to Financial Services objectives: completing an eligibility lookup (`"Eligibility check completed"`) or receiving a requested documents checklist (`"Document list provided"`), while other lookups like overview or benefits remain pending unless a success condition is completed.
+- Handled voice interruptions and cleanup events cleanly using `SpeechCreatedEvent.speech_handle` done callbacks and connection state validation to ensure that calls cut abruptly before response playout are correctly marked as `FAILED`, while completed conversations remain recorded as `SUCCESS`.
+- Created a Next.js call analytics dashboard `/call-analytics` to display call statistics (total calls, success rate, failed vs successful call distributions, language distributions, and recent call histories).
+- Added comprehensive integration tests in `tests/test_integration_flow.py` covering timeout handling, NOT_FOUND results, successful lookups, voice interruptions, and clean hang-ups.
+
 ---
 
 ## Escalation Database Schema

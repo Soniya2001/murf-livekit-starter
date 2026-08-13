@@ -6,7 +6,7 @@ logger = logging.getLogger("db")
 DB_PATH = "finbuddy_memory.db"
 
 def init_db():
-    """Initialize the caller facts and escalation requests database tables if they don't exist."""
+    """Initialize the caller facts, escalation requests, and call outcomes database tables if they don't exist."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
@@ -34,8 +34,26 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS call_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            call_id TEXT UNIQUE,
+            user_id TEXT,
+            call_type TEXT,
+            started_at TEXT,
+            ended_at TEXT,
+            duration_seconds REAL,
+            outcome TEXT DEFAULT 'IN_PROGRESS',
+            success_reason TEXT,
+            scheme_name TEXT,
+            information_requested TEXT,
+            language TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
+
 
 def get_caller(user_id: str):
     """Retrieve a caller's record by user_id."""
@@ -173,4 +191,146 @@ def update_escalation_status(reference_id: str, status: str) -> bool:
         return False
     finally:
         conn.close()
+
+
+def start_call_outcome(call_id: str, user_id: str, call_type: str, language: str = "English") -> dict:
+    """Initialize a call outcome record as IN_PROGRESS."""
+    from datetime import datetime
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    started_at = datetime.utcnow().isoformat() + "Z"
+    try:
+        cursor.execute("""
+            INSERT OR REPLACE INTO call_outcomes 
+            (call_id, user_id, call_type, started_at, outcome, language)
+            VALUES (?, ?, ?, ?, 'IN_PROGRESS', ?)
+        """, (call_id, user_id, call_type, started_at, language))
+        conn.commit()
+        return {"success": True, "call_id": call_id}
+    except Exception as e:
+        logger.error(f"Error starting call outcome: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        conn.close()
+
+
+def update_call_outcome(
+    call_id: str, 
+    outcome: str, 
+    success_reason: str = None, 
+    scheme_name: str = None, 
+    information_requested: str = None,
+    language: str = None
+) -> bool:
+    """Update outcome of a call."""
+    from datetime import datetime
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT started_at FROM call_outcomes WHERE call_id = ?", (call_id,))
+        row = cursor.fetchone()
+        ended_at = datetime.utcnow().isoformat() + "Z"
+        duration = 0.0
+        if row and row[0]:
+            try:
+                start_dt = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+                end_dt = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+                duration = (end_dt - start_dt).total_seconds()
+            except Exception:
+                pass
+        
+        query = """
+            UPDATE call_outcomes 
+            SET ended_at = ?, duration_seconds = ?, outcome = ?
+        """
+        params = [ended_at, duration, outcome]
+        
+        if success_reason is not None:
+            query += ", success_reason = ?"
+            params.append(success_reason)
+        if scheme_name is not None:
+            query += ", scheme_name = ?"
+            params.append(scheme_name)
+        if information_requested is not None:
+            query += ", information_requested = ?"
+            params.append(information_requested)
+        if language is not None:
+            query += ", language = ?"
+            params.append(language)
+            
+        query += " WHERE call_id = ?"
+        params.append(call_id)
+        
+        cursor.execute(query, params)
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error updating call outcome: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_call_outcome(call_id: str):
+    """Retrieve a call outcome by call_id."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT call_id, user_id, call_type, started_at, ended_at, duration_seconds, outcome, success_reason, scheme_name, information_requested, language, created_at
+        FROM call_outcomes WHERE call_id = ?
+    """, (call_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {
+            "call_id": row[0],
+            "user_id": row[1],
+            "call_type": row[2],
+            "started_at": row[3],
+            "ended_at": row[4],
+            "duration_seconds": row[5],
+            "outcome": row[6],
+            "success_reason": row[7],
+            "scheme_name": row[8],
+            "information_requested": row[9],
+            "language": row[10],
+            "created_at": row[11]
+        }
+    return None
+
+
+def get_analytics_summary() -> dict:
+    """Retrieve aggregated counts for call outcomes."""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT COUNT(*) FROM call_outcomes")
+        total_calls = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM call_outcomes WHERE outcome = 'SUCCESS'")
+        successful_calls = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM call_outcomes WHERE outcome = 'FAILED'")
+        failed_calls = cursor.fetchone()[0]
+        
+        success_rate = 0.0
+        if total_calls > 0:
+            success_rate = round((successful_calls / total_calls) * 100, 2)
+            
+        return {
+            "total_calls": total_calls,
+            "successful_calls": successful_calls,
+            "failed_calls": failed_calls,
+            "success_rate": success_rate
+        }
+    except Exception as e:
+        logger.error(f"Error getting analytics summary: {e}")
+        return {"total_calls": 0, "successful_calls": 0, "failed_calls": 0, "success_rate": 0.0}
+    finally:
+        conn.close()
+
 

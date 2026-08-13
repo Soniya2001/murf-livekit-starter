@@ -258,6 +258,47 @@ To prevent hallucinations, FinBuddy is grounded in official government data.
    - "What is a Mudra loan?"
    - "Explain a fictional scheme XYZ"
 
+## Day 8 – Call Outcome Tracking
+
+### Success Definition
+"A successful Financial Services call is one in which the caller completes a government-scheme eligibility check or receives a requested government-scheme document list."
+
+### Allowed Outcomes
+- **SUCCESS**: Achieved when either:
+  1. **Eligibility Enquiry Completed**: The requested scheme was identified, required information gathered, and the agent explained eligibility criteria (stating that final eligibility is determined by the relevant authority).
+  2. **Document List Provided**: The agent successfully retrieves and provides the available scheme document list.
+- **FAILED**: Achieved when the conversation ends without meeting a success condition (e.g., caller hangs up early, leaves before documents are listed, or a technical connection/voice pipeline error occurs).
+
+### Call Lifecycle & Storage
+- Call records are initially created at call/session start as `IN_PROGRESS`.
+- At call end, the final outcome is evaluated and saved into SQLite (`call_outcomes` table).
+- The actual LiveKit room session ID (`ctx.room.sid`) serves as the unique `call_id` to ensure consistent mapping from start to finish.
+
+### Database Schema
+The database uses the `call_outcomes` table with fields:
+- `id`: Auto-incrementing primary key
+- `call_id`: Unique identifier (LiveKit session ID)
+- `user_id`: Anonymous participant identifier
+- `call_type`: Connection channel (`BROWSER` or `SIP`)
+- `started_at`/`ended_at`: Call start/end timestamps
+- `duration_seconds`: Calculated call duration
+- `outcome`: `SUCCESS` or `FAILED`
+- `success_reason`: Breakdown detail (e.g. `"Eligibility check completed"`, `"Document list provided"`)
+- `scheme_name` / `information_requested`: Curated metadata about the interaction
+- `language`: Call language (Hindi, Tamil, Telugu, English)
+
+### Dashboard UI & API
+- **Web Dashboard**: Access `/call-analytics` or `/dashboard` to view dynamic statistics pulled directly from the SQLite database.
+- **Metrics**: Displays `TOTAL CALLS`, `SUCCESSFUL CALLS`, `FAILED CALLS`, and `Success Rate %` dynamically (zero-rate handled safely).
+- **Privacy Protections**: Never displays, parses, or stores sensitive variables (like OTPs, PINs, passwords, bank account numbers, credentials, or full transcripts).
+
+### Testing Instructions
+To run automated analytics tests:
+```bash
+uv run pytest tests/test_analytics.py
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
+

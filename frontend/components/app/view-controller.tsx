@@ -4,7 +4,8 @@ import { useState, useEffect } from 'react';
 import { useTheme } from 'next-themes';
 import { AnimatePresence, motion } from 'motion/react';
 import { useSessionContext } from '@livekit/components-react';
-import { ShieldAlert, RefreshCw, Loader2, PhoneCall, Lock, Zap, Globe, MicOff } from 'lucide-react';
+import { ShieldAlert, RefreshCw, Loader2, PhoneCall, Lock, Zap, Globe, MicOff, BarChart3 } from 'lucide-react';
+import Link from 'next/link';
 import type { AppConfig } from '@/app-config';
 import { AgentSessionView_01 } from '@/components/agents-ui/blocks/agent-session-view-01';
 import { WelcomeView } from '@/components/app/welcome-view';
@@ -115,6 +116,14 @@ export function ViewController({ appConfig }: ViewControllerProps) {
 
         {/* Right Side: styled language picker */}
         <div className="flex items-center gap-2">
+          <Link
+            href="/call-analytics"
+            className="flex items-center gap-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white border border-transparent px-3 py-1.5 rounded-lg text-xs font-semibold shadow-md hover:shadow-indigo-500/20 transition-all cursor-pointer mr-1"
+          >
+            <BarChart3 className="size-3.5" />
+            <span className="hidden sm:inline">Call Analytics</span>
+            <span className="sm:hidden">Analytics</span>
+          </Link>
           <div className="relative flex items-center gap-1.5 bg-[#0e1628] border border-white/10 px-3 py-1.5 rounded-lg text-xs font-semibold text-white cursor-pointer hover:border-slate-500 transition-colors">
             <Globe className="size-3.5 text-slate-300" />
             <select

@@ -18,6 +18,7 @@ from livekit.agents import (
     tokenize,
     room_io,
     UserInputTranscribedEvent,
+    SpeechCreatedEvent,
     function_tool,
 )
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
@@ -43,8 +44,8 @@ Greet the user immediately and warmly:
 - Raise awareness about common financial frauds and online scams, providing actionable security advice.
 
 # KNOWLEDGE & TOOL CALLS
-- Do NOT answer specific details about government financial schemes (such as eligibility criteria, benefits, premiums, application processes, or required documents) from memory.
-- You MUST call the `lookup_government_scheme` tool whenever the user asks for information about a specific government financial scheme (e.g. PMJDY, APY, PMJJBY, PMSBY, PMMY / PM Mudra, Stand-Up India, JanSamarth).
+- Do NOT answer specific details about government financial schemes (such as eligibility criteria, benefits, premiums, application processes, or required documents) from memory or from the user profile.
+- You MUST call the `lookup_government_scheme` tool whenever the user asks for information about a specific government financial scheme (e.g. PMJDY, APY, PMJJBY, PMSBY, PMMY / PM Mudra, Stand-Up India, JanSamarth), even if the scheme is mentioned in the RETURNING USER PROFILE.
 - When explaining the retrieved information, tell the user the official source and source update date. Say: "According to information sourced from the official government portal [source], last updated on [source_updated_at]..." Keep it clean and easy to say. Do NOT refer to retrieved_at as the time the official government website was accessed.
 - Summarize long text naturally for a spoken conversation. Do not read raw lists or complex tables.
 - Knowledge stops at: Personal account details, transaction processing, and making final approvals or commitments on behalf of any institution.
@@ -112,6 +113,170 @@ Do NOT ask any follow-up questions, do NOT try to convince them, and do NOT cont
 """
 
 
+def num_to_tamil(num: int) -> str:
+    if num == 0:
+        return "பூஜ்ஜியம்"
+        
+    ones = {
+        1: "ஒன்று", 2: "இரண்டு", 3: "மூன்று", 4: "நான்கு", 5: "ஐந்து",
+        6: "ஆறு", 7: "ஏழு", 8: "எட்டு", 9: "ஒன்பது"
+    }
+    
+    def convert_999(n):
+        if n == 0:
+            return ""
+        parts = []
+        
+        # Hundreds
+        hundreds = n // 100
+        rem = n % 100
+        if hundreds > 0:
+            hundreds_names = {
+                1: "நூறு", 2: "இருநூறு", 3: "முந்நூறு", 4: "நானூறு", 5: "ஐந்நூறு",
+                6: "அறுநூறு", 7: "எழுநூறு", 8: "எண்ணூறு", 9: "தொள்ளாயிரம்"
+            }
+            hundreds_prefixes = {
+                1: "நூற்று", 2: "இருநூற்று", 3: "முந்நூற்று", 4: "நானூற்று", 5: "ஐந்நூற்று",
+                6: "அறுநூற்று", 7: "எழுநூற்று", 8: "எண்ணூற்று", 9: "தொள்ளாயிரத்து"
+            }
+            if rem > 0:
+                parts.append(hundreds_prefixes[hundreds])
+            else:
+                parts.append(hundreds_names[hundreds])
+                
+        # Tens and ones
+        if rem > 0:
+            if rem < 10:
+                parts.append(ones[rem])
+            elif rem == 10:
+                parts.append("பத்து")
+            elif rem < 20:
+                teens = {
+                    11: "பதினொன்று", 12: "பன்னிரண்டு", 13: "பதின்மூன்று", 14: "பதினான்கு",
+                    15: "பதினைந்து", 16: "பதினாறு", 17: "பதினேழு", 18: "பதினெட்டு", 19: "பத்தொன்பது"
+                }
+                parts.append(teens[rem])
+            else:
+                tens = rem // 10
+                o = rem % 10
+                tens_names = {
+                    2: "இருபது", 3: "முப்பது", 4: "நாற்பது", 5: "ஐம்பது",
+                    6: "அறுபது", 7: "எழுபது", 8: "எண்பது", 9: "தொண்ணூறு"
+                }
+                tens_prefixes = {
+                    2: "இருபத்து", 3: "முப்பத்து", 4: "நாற்பத்து", 5: "ஐம்பத்து",
+                    6: "அறுபத்து", 7: "எழுபத்து", 8: "எண்பத்து", 9: "தொண்ணூற்று"
+                }
+                if o > 0:
+                    parts.append(tens_prefixes[tens] + ones[o])
+                else:
+                    parts.append(tens_names[tens])
+        return "".join(parts)
+
+    def convert_large(n):
+        if n == 0:
+            return ""
+        if n < 1000:
+            return convert_999(n)
+            
+        # Crores
+        if n >= 10000000:
+            crores = n // 10000000
+            rem = n % 10000000
+            c_part = "ஒரு கோடி" if crores == 1 else convert_large(crores) + " கோடி"
+            if rem > 0:
+                c_part = c_part.replace("கோடி", "கோடியே")
+                return c_part + convert_large(rem)
+            return c_part
+            
+        # Lakhs
+        if n >= 100000:
+            lakhs = n // 100000
+            rem = n % 100000
+            l_part = "ஒரு லட்சம்" if lakhs == 1 else convert_large(lakhs) + " லட்சம்"
+            if rem > 0:
+                l_part = l_part.replace("லட்சம்", "லட்சத்து")
+                return l_part + convert_large(rem)
+            return l_part
+            
+        # Thousands
+        thousands = n // 1000
+        rem = n % 1000
+        
+        t_prefix = ""
+        if thousands == 1:
+            t_prefix = "ஆயிரத்து" if rem > 0 else "ஆயிரம்"
+        else:
+            t_base = convert_large(thousands)
+            if t_base.endswith("ஒன்று"):
+                t_prefix = t_base[:-5] + ("ஓராயிரத்து" if rem > 0 else "ஓராயிரம்")
+            elif t_base.endswith("இரண்டு"):
+                t_prefix = t_base[:-6] + ("இரண்டாயிரத்து" if rem > 0 else "இரண்டாயிரம்")
+            elif t_base.endswith("மூன்று"):
+                t_prefix = t_base[:-6] + ("மூன்றாயிரத்து" if rem > 0 else "மூன்றாயிரம்")
+            elif t_base.endswith("நான்கு"):
+                t_prefix = t_base[:-6] + ("நான்காயிரத்து" if rem > 0 else "நான்காயிரம்")
+            elif t_base.endswith("ஐந்து"):
+                t_prefix = t_base[:-5] + ("ஐந்தாயிரத்து" if rem > 0 else "ஐந்தாயிரம்")
+            elif t_base.endswith("ஆறு"):
+                t_prefix = t_base[:-3] + ("ஆறாயிரத்து" if rem > 0 else "ஆறாயிரம்")
+            elif t_base.endswith("ஏழு"):
+                t_prefix = t_base[:-3] + ("ஏழாயிரத்து" if rem > 0 else "ஏழாயிரம்")
+            elif t_base.endswith("எட்டு"):
+                t_prefix = t_base[:-4] + ("எட்டாயிரத்து" if rem > 0 else "எட்டாயிரம்")
+            elif t_base.endswith("ஒன்பது"):
+                t_prefix = t_base[:-6] + ("ஒன்பதாயிரத்து" if rem > 0 else "ஒன்பதாயிரம்")
+            elif t_base.endswith("பத்து"):
+                t_prefix = t_base[:-5] + ("பத்தாயிரத்து" if rem > 0 else "பத்தாயிரம்")
+            elif t_base.endswith("இருபது"):
+                t_prefix = t_base[:-6] + ("இருபதாயிரத்து" if rem > 0 else "இருபதாயிரம்")
+            elif t_base.endswith("முப்பது"):
+                t_prefix = t_base[:-7] + ("முப்பதாயிரத்து" if rem > 0 else "முப்பதாயிரம்")
+            elif t_base.endswith("நாற்பது"):
+                t_prefix = t_base[:-7] + ("நாற்பதாயிரத்து" if rem > 0 else "நாற்பதாயிரம்")
+            elif t_base.endswith("ஐம்பது"):
+                t_prefix = t_base[:-6] + ("ஐம்பதாயிரத்து" if rem > 0 else "ஐம்பதாயிரம்")
+            elif t_base.endswith("அறுபது"):
+                t_prefix = t_base[:-6] + ("அறுபதாயிரத்து" if rem > 0 else "அறுபதாயிரம்")
+            elif t_base.endswith("எழுபது"):
+                t_prefix = t_base[:-6] + ("எழுபதாயிரத்து" if rem > 0 else "எழுபதாயிரம்")
+            elif t_base.endswith("எண்பது"):
+                t_prefix = t_base[:-6] + ("எண்பதாயிரத்து" if rem > 0 else "எண்பதாயிரம்")
+            elif t_base.endswith("தொண்ணூறு"):
+                t_prefix = t_base[:-8] + ("தொண்ணூறாயிரத்து" if rem > 0 else "தொண்ணூறாயிரம்")
+            else:
+                t_prefix = t_base + (" ஆயிரத்து" if rem > 0 else " ஆயிரம்")
+                
+        return t_prefix + convert_large(rem)
+
+    return convert_large(num)
+
+
+def replace_numbers_with_tamil(text: str) -> str:
+    def repl(match):
+        num_str = match.group(0).replace(",", "")
+        try:
+            val = int(num_str)
+            return num_to_tamil(val)
+        except Exception:
+            return match.group(0)
+    return re.sub(r'\b\d+(?:,\d+)*\b', repl, text)
+
+
+class TamilNumberFriendlyTTS(murf.TTS):
+    def __init__(self, *args, **kwargs):
+        self.assistant_ref = None
+        super().__init__(*args, **kwargs)
+
+    def synthesize(self, text: str, *args, **kwargs):
+        if self.assistant_ref and getattr(self.assistant_ref, "language", "") == "Tamil":
+            try:
+                text = replace_numbers_with_tamil(text)
+            except Exception as e:
+                logger.error(f"Error converting numbers to Tamil: {e}")
+        return super().synthesize(text, *args, **kwargs)
+
+
 class Assistant(Agent):
     def __init__(self, user_id: str = "default_user", initial_info: str = "", is_sip: bool = False) -> None:
         instructions = SYSTEM_PROMPT
@@ -149,6 +314,34 @@ class Assistant(Agent):
                 
         instructions += f"\n\n# CURRENT SESSION INFO\n- Current User ID: {user_id}\n"
         super().__init__(instructions=instructions)
+        
+        # Day 8 call outcome state tracking
+        self.call_id = None
+        self.call_goal_completed = False
+        self.success_reason = None
+        self.scheme_name = None
+        self.information_requested = None
+        self.language = "English"
+        
+        # Buffer properties for success state until playout completes
+        self.pending_success = False
+        self.pending_success_reason = None
+        self.pending_scheme_name = None
+        self.pending_information_requested = None
+
+    def mark_call_success(self, success_reason: str, scheme_name: str = None, information_requested: str = None):
+        """Internal helper to mark the call as successful once conditions are met."""
+        if self.call_id and self.call_id.startswith("call-"):
+            self.call_goal_completed = True
+            self.success_reason = success_reason
+            self.scheme_name = scheme_name
+            self.information_requested = information_requested
+        else:
+            self.pending_success = True
+            self.pending_success_reason = success_reason
+            self.pending_scheme_name = scheme_name
+            self.pending_information_requested = information_requested
+
 
     @function_tool
     async def lookup_caller(self, user_id: str) -> str:
@@ -336,6 +529,12 @@ class Assistant(Agent):
                 timeout=8.0
             )
             logger.info(f"lookup_government_scheme result: {result.get('success')}")
+            if result.get("success"):
+                info_type = result.get("info_type")
+                if info_type == "documents":
+                    self.mark_call_success("Document list provided", scheme_name, information_requested)
+                elif info_type == "eligibility":
+                    self.mark_call_success("Eligibility check completed", scheme_name, information_requested)
             return json.dumps(result)
         except asyncio.TimeoutError:
             logger.error("lookup_government_scheme timed out")
@@ -351,6 +550,7 @@ class Assistant(Agent):
                 "error_type": "CONNECTION_ERROR",
                 "message": f"Connection error or API unavailable: {str(e)}"
             })
+
 
 
 server = AgentServer()
@@ -375,6 +575,7 @@ async def my_agent(ctx: JobContext):
     user_id = "default_user"
     initial_info = ""
     is_sip = ctx.room.name.startswith("sip_room_")
+    caller_profile = None
     try:
         import asyncio
         remote_participant = None
@@ -386,9 +587,9 @@ async def my_agent(ctx: JobContext):
 
         if remote_participant:
             user_id = remote_participant.identity
-            caller = get_caller(user_id)
-            if caller:
-                initial_info = json.dumps(caller)
+            caller_profile = get_caller(user_id)
+            if caller_profile:
+                initial_info = json.dumps(caller_profile)
     except Exception as e:
         logger.error(f"Error during initial caller lookup: {e}")
 
@@ -404,7 +605,7 @@ async def my_agent(ctx: JobContext):
             ),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
-        tts=murf.TTS(
+        tts=TamilNumberFriendlyTTS(
                 voice="Anisha", 
                 locale="en-IN",
                 style="Conversational",
@@ -419,6 +620,22 @@ async def my_agent(ctx: JobContext):
         # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
         preemptive_generation=True,
     )
+
+    @session.on("speech_created")
+    def on_speech_created(ev: SpeechCreatedEvent):
+        speech_handle = ev.speech_handle
+        
+        def on_done(fut):
+            if not speech_handle.interrupted or ctx.room.isconnected():
+                if getattr(assistant, "pending_success", False):
+                    assistant.call_goal_completed = True
+                    assistant.success_reason = assistant.pending_success_reason
+                    assistant.scheme_name = assistant.pending_scheme_name
+                    assistant.information_requested = assistant.pending_information_requested
+                    assistant.pending_success = False
+                    logger.info("Speech playout completed successfully. Call marked as SUCCESS.")
+        
+        speech_handle._done_fut.add_done_callback(on_done)
 
     @session.on("user_input_transcribed")
     def on_user_input_transcribed(ev: UserInputTranscribedEvent):
@@ -469,18 +686,17 @@ async def my_agent(ctx: JobContext):
 
         # Check for common Hinglish/Hindi romanized keywords
         hindi_keywords = {
-            "kya", "hai", "aur", "main", "haan", "nahin", "aap", "namaste", "shukriya",
-            "yojana", "batao", "bataiye", "samjhao", "dhan", "suraksha", "bima", "pension",
-            "mein", "ke", "ki", "se", "ko", "ka", "jo", "toh", "bhi", "ho", "kar", "raha",
-            "rahi", "rha", "rhi", "mujhe", "mera", "meri", "hum", "tum", "apna", "apni",
-            "karke", "karo", "karna", "tha", "thi", "the", "ab", "kab", "tab", "sab"
+            "kya", "hai", "aur", "haan", "nahin", "aap", "namaste", "shukriya",
+            "batao", "bataiye", "samjhao", "dhan", "suraksha",
+            "raha", "rahi", "rha", "rhi", "mujhe", "mera", "meri", "hum", "tum", "apna", "apni",
+            "karke", "karo", "karna"
         }
 
         # Check for common Tanglish/Tamil romanized keywords
         tamil_keywords = {
             "vanakkam", "nandri", "aama", "illa", "enaku", "ungalukku", "theriyum", "theriyathu",
-            "panna", "pannunga", "solla", "sollunga", "keta", "kelunga", "panam", "kaasu",
-            "bank", "vangi", "semipu", "kadan", "bima", "pension", "thittam", "yojana", "scheme",
+            "panna", "pannunga", "solla", "sollunga", "keta", "kelunga", "kaasu",
+            "vangi", "semipu", "kadan", "thittam",
             "naan", "neenga", "avanga", "ivan", "iru", "iruku", "irukanga", "yen", "eppadi",
             "eppo", "enga", "enna", "romba", "nalla", "veedu", "kaala", "nalla-irukingala"
         }
@@ -488,9 +704,9 @@ async def my_agent(ctx: JobContext):
         # Check for common Telugu/Telish romanized keywords
         telugu_keywords = {
             "namaskaram", "dhanyavadalu", "avunu", "kadu", "naku", "meeku", "telusu", "teliyadu",
-            "cheyandi", "cheyyali", "cheppandi", "panam", "dhanam", "bank", "vaddi", "pension",
-            "bima", "yojana", "pathakam", "scheme", "nenu", "meeru", "varu", "vadu", "ela",
-            "eppudu", "ekkada", "enti", "chala", "bagundi", "illu", "kalam", "namaste"
+            "cheyandi", "cheyyali", "cheppandi", "dhanam", "vaddi",
+            "pathakam", "nenu", "meeru", "varu", "vadu", "ela",
+            "eppudu", "ekkada", "enti", "chala", "bagundi", "illu", "kalam"
         }
 
         words = set(transcript.split())
@@ -502,27 +718,37 @@ async def my_agent(ctx: JobContext):
         if "speak in english" in transcript:
             logger.info("Manual override to English detected.")
             session.tts.update_options(voice="Anisha", locale="en-IN", style="Conversation")
+            assistant.language = "English"
         elif "தமிழில் பேசுங்கள்" in transcript or "tamilil pesungal" in transcript or "speak in tamil" in transcript:
             logger.info("Manual override to Tamil detected.")
             session.tts.update_options(voice="Karthikeyan", locale="ta-IN", style="Conversational")
+            assistant.language = "Tamil"
         elif "हिंदी में बात करें" in transcript or "hindi mein baat karen" in transcript or "speak in hindi" in transcript:
             logger.info("Manual override to Hindi detected.")
             session.tts.update_options(voice="Anisha", locale="hi-IN", style="Conversation")
+            assistant.language = "Hindi"
         elif "తెలుగులో మాట్లాడండి" in transcript or "telugulo matladandi" in transcript or "speak in telugu" in transcript:
             logger.info("Manual override to Telugu detected.")
             session.tts.update_options(voice="Anusha", locale="te-IN", style="Conversational")
+            assistant.language = "Telugu"
         elif has_tamil or "ta" in detected_lang or words.intersection(tamil_keywords):
             logger.info(f"Tamil language detected (lang: {detected_lang}). Switching TTS to Karthikeyan (ta-IN).")
             session.tts.update_options(voice="Karthikeyan", locale="ta-IN", style="Conversational")
+            assistant.language = "Tamil"
         elif has_telugu or "te" in detected_lang or words.intersection(telugu_keywords):
             logger.info(f"Telugu language detected (lang: {detected_lang}). Switching TTS to Anusha (te-IN).")
             session.tts.update_options(voice="Anusha", locale="te-IN", style="Conversational")
+            assistant.language = "Telugu"
         elif has_devanagari or "hi" in detected_lang or words.intersection(hindi_keywords):
             logger.info(f"Hindi language detected (lang: {detected_lang}). Switching TTS to Anisha (hi-IN).")
             session.tts.update_options(voice="Anisha", locale="hi-IN", style="Conversation")
+            assistant.language = "Hindi"
         else:
-            logger.info(f"English language detected (lang: {detected_lang}). Switching TTS to Anisha (en-IN).")
-            session.tts.update_options(voice="Anisha", locale="en-IN", style="Conversation")
+            if assistant.language == "English":
+                logger.info(f"English language detected (lang: {detected_lang}). Switching TTS to Anisha (en-IN).")
+                session.tts.update_options(voice="Anisha", locale="en-IN", style="Conversation")
+                assistant.language = "English"
+
 
 
     #     llm=openai.realtime.RealtimeModel(voice="marin")
@@ -536,9 +762,29 @@ async def my_agent(ctx: JobContext):
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
 
+    assistant = Assistant(user_id=user_id, initial_info=initial_info, is_sip=is_sip)
+    if hasattr(session.tts, "assistant_ref"):
+        session.tts.assistant_ref = assistant
+        
+    # Configure assistant language and TTS voice options based on loaded caller profile language preference
+    if caller_profile:
+        lang_pref = caller_profile.get("language_preference")
+        if lang_pref == "Tamil":
+            logger.info("Initializing session with Tamil language preference from user profile.")
+            session.tts.update_options(voice="Karthikeyan", locale="ta-IN", style="Conversational")
+            assistant.language = "Tamil"
+        elif lang_pref == "Telugu":
+            logger.info("Initializing session with Telugu language preference from user profile.")
+            session.tts.update_options(voice="Anusha", locale="te-IN", style="Conversational")
+            assistant.language = "Telugu"
+        elif lang_pref == "Hindi":
+            logger.info("Initializing session with Hindi language preference from user profile.")
+            session.tts.update_options(voice="Anisha", locale="hi-IN", style="Conversation")
+            assistant.language = "Hindi"
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(user_id=user_id, initial_info=initial_info, is_sip=is_sip),
+        agent=assistant,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -554,6 +800,49 @@ async def my_agent(ctx: JobContext):
 
     # Join the room and connect to the user
     await ctx.connect()
+    
+    # Establish unique call ID and initialize database logging
+    room_sid = ctx.room.sid
+    if asyncio.iscoroutine(room_sid) or hasattr(room_sid, "__await__"):
+        room_sid = await room_sid
+    call_id = room_sid if room_sid else f"call_{uuid.uuid4().hex[:12]}"
+    call_type = "SIP" if is_sip else "BROWSER"
+    assistant.call_id = call_id
+    
+    from db import start_call_outcome, update_call_outcome
+    start_call_outcome(call_id=call_id, user_id=user_id, call_type=call_type, language=assistant.language)
+    
+    # Track execution cleanup state
+    cleanup_done = False
+    
+    async def cleanup_call():
+        nonlocal cleanup_done
+        if cleanup_done:
+            return
+        cleanup_done = True
+        logger.info(f"Cleaning up call session: {assistant.call_id}")
+        outcome = "SUCCESS" if assistant.call_goal_completed else "FAILED"
+        success_reason = assistant.success_reason
+        if outcome == "FAILED" and not success_reason:
+            success_reason = "Incomplete call"
+            
+        update_call_outcome(
+            call_id=assistant.call_id,
+            outcome=outcome,
+            success_reason=success_reason,
+            scheme_name=assistant.scheme_name,
+            information_requested=assistant.information_requested,
+            language=assistant.language
+        )
+
+    # Register cleanup handlers
+    ctx.add_shutdown_callback(cleanup_call)
+    
+    @ctx.room.on("disconnected")
+    def on_disconnected():
+        logger.info("Room disconnected, updating call outcome.")
+        asyncio.create_task(cleanup_call())
+
 
     @ctx.room.on("dtmf_received")
     def on_dtmf_received(participant: rtc.RemoteParticipant, code: int, digit: str):

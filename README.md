@@ -305,6 +305,73 @@ This section tracks the daily progress of **FinBuddy**, our AI Financial Voice A
 
 ---
 
+# Day 9 – Multi-Specialist Handoff Routing
+
+We introduced a specialized multi-agent handoff router that delegates user conversations from the main assistant to two separate specialist agents depending on the intent.
+
+## Architecture
+
+```
+                    FinBuddy Main Agent
+                             |
+                   Intent / Request Type
+                        /          \
+                       /            \
+             Government Scheme    Cyber Fraud
+                    |                  |
+                    ▼                  ▼
+            Scheme Specialist    Fraud Specialist
+```
+
+### Components and Responsibilities
+
+1. **Main FinBuddy Agent (`Assistant`)**:
+   - Handles general financial literacy, digital payment safety (e.g. UPI scams, compound interest, savings/budgeting definitions).
+   - Decides whether a specialist is required and triggers the appropriate handoff.
+   - For government schemes, announces: `"I'll connect you with my government scheme specialist, who can help with the details."`
+   - For cyber fraud/scam questions, announces: `"I'll connect you with my cyber fraud and financial safety specialist, who can help you with the next steps."`
+
+2. **Government Scheme Specialist (`GovernmentSchemeSpecialist`)**:
+   - Responsibility: Provide accurate, simple, and source-grounded information about Indian government financial schemes.
+   - Voice: Samar (male voice).
+
+   - Handles: Scheme eligibility, benefits, application processes, required documents, scheme status, comparisons.
+   - Defer lookup queries to: `lookup_government_scheme` tool.
+   - Out-of-role topics: Calls the `return_to_main_agent` tool to return control back to the main assistant agent along with the context.
+   - Final eligibility warning: Never guarantees approval; final eligibility is determined by the relevant authority.
+
+3. **Cyber Fraud and Financial Safety Specialist (`CyberFraudSpecialist`)**:
+   - Responsibility: Provide reassurance, immediate safety guidance, and clear next steps when users report scams (UPI scams, phishing links, fake banking/customer-care calls, compromised accounts, impersonation).
+   - Voice: Samar (male voice).
+   - Limits: NEVER ask for sensitive identifiers (OTP, PIN, passwords, account numbers, Aadhaar, PAN). If user shares, scrub immediately and state safety guardrail warning.
+   - Next steps: Reassure, identify fraud type, advise contacting banks officially, handle escalation requests using `create_escalation` with explicit user consent.
+   - Out-of-role topics: Calls the `return_to_main_agent` tool to return control back to the main assistant agent along with the context.
+
+4. **Specialist Re-routing and Return (`return_to_main_agent`)**:
+   - Implements a controlled handback loop-free routing mechanism. When a user asks an out-of-scope question or switches topics inside a specialist session (e.g., from scheme information to reporting cyber fraud), the specialist triggers the `return_to_main_agent` tool.
+   - This passes the user's query, language, and intent context back to the main `Assistant`.
+   - The main agent uses dynamic instructions context injection to automatically route the user to the correct target specialist (Government Specialist -> Main Agent -> Cyber Fraud Specialist) on its immediate turn.
+
+5. **Multilingual and Native Script Support**:
+   - Preserves user's detected language (English, Hindi, Tamil, Telugu) across the handoff.
+   - Specialist agents greet the user and respond strictly using correct native scripts (Devanagari, Tamil, Telugu, Latin).
+
+6. **Call Outcome success integration**:
+   - Goal completions (e.g. document checklists or eligibility inquiries) are written back to the active session metrics, marking calls correctly as `SUCCESS` or `FAILED`.
+
+
+## Running Handoff Tests
+
+To execute handoff verification tests:
+```bash
+cd backend
+.venv\Scripts\pytest tests/test_handoff.py
+```
+
+
+
+---
+
 ## Escalation Database Schema
 The database contains the `escalation_requests` table with fields:
 - `id` (INTEGER, Primary Key Auto-Increment)

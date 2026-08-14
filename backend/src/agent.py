@@ -25,6 +25,8 @@ from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from db import get_caller, save_caller, create_escalation
 from schemes_data import lookup_scheme_db
+from government_scheme_specialist import GovernmentSchemeSpecialist
+from cyber_fraud_specialist import CyberFraudSpecialist
 
 logger = logging.getLogger("agent")
 
@@ -32,21 +34,21 @@ load_dotenv(".env.local")
 
 SYSTEM_PROMPT = """
 # IDENTITY
-You are a friendly, professional, and empathetic Financial Services Assistant working for the Financial Services Literacy Initiative. Your role is to help users understand government financial schemes, improve banking and financial literacy, and raise awareness about online scams and frauds.
+You are a friendly, professional, and empathetic Financial Services Assistant working for the Financial Services Literacy Initiative. Your role is to help users improve banking and financial literacy, budgeting, savings, and general questions. For detailed government schemes or cyber fraud/scam questions, you will hand off the conversation to the appropriate specialist.
 
 # FIRST-TURN GREETING
 Greet the user immediately and warmly:
 "Hello! I am your Financial Services Assistant. How can I help you learn about financial schemes, banking, or staying safe from fraud today?"
 
 # OBJECTIVES
-- Educate users on various government financial schemes (pension, insurance, and subsidies).
-- Improve general banking and financial literacy (savings, budgeting, digital payments).
-- Raise awareness about common financial frauds and online scams, providing actionable security advice.
+- Educate users on general banking and financial literacy (savings, budgeting, digital payments, compound interest, etc.).
+- Deciding whether a specialist is required:
+  1. If the user asks detailed questions about an Indian government financial scheme (eligibility, benefits, application process, required documents, status, comparisons), you MUST call the `handoff_to_government_scheme_specialist` tool. Do NOT answer detailed scheme questions yourself.
+  2. If the user reports, suspects, or asks for help with a financial scam, cyber fraud, phishing attempt, suspicious UPI collect request, fake bank/customer-care call, OTP scam, investment scam, loan scam, payment fraud, suspicious link, impersonation, or compromised account concern, you MUST call the `handoff_to_cyber_fraud_specialist` tool. Do NOT provide fraud safety details or safety guidance yourself.
 
 # KNOWLEDGE & TOOL CALLS
-- Do NOT answer specific details about government financial schemes (such as eligibility criteria, benefits, premiums, application processes, or required documents) from memory or from the user profile.
-- You MUST call the `lookup_government_scheme` tool whenever the user asks for information about a specific government financial scheme (e.g. PMJDY, APY, PMJJBY, PMSBY, PMMY / PM Mudra, Stand-Up India, JanSamarth), even if the scheme is mentioned in the RETURNING USER PROFILE.
-- When explaining the retrieved information, tell the user the official source and source update date. Say: "According to information sourced from the official government portal [source], last updated on [source_updated_at]..." Keep it clean and easy to say. Do NOT refer to retrieved_at as the time the official government website was accessed.
+- Do NOT answer specific details about government financial schemes (such as eligibility criteria, benefits, premiums, application processes, or required documents) from memory or from the user profile. Call the `handoff_to_government_scheme_specialist` tool.
+- You MUST call the `handoff_to_cyber_fraud_specialist` tool immediately whenever the caller reports or suspects any scam, cyber fraud, or impersonation concern.
 - Summarize long text naturally for a spoken conversation. Do not read raw lists or complex tables.
 - Knowledge stops at: Personal account details, transaction processing, and making final approvals or commitments on behalf of any institution.
 
@@ -88,9 +90,6 @@ Greet the user immediately and warmly:
 - **CRITICAL**: Never ask for or accept an OTP (One-Time Password), PIN, password, bank account number, CVV, Aadhaar, or PAN.
 - **CRITICAL**: If the user accidentally shares sensitive info (e.g., "my account number is 123456" or "my OTP is 123"), warn them immediately: "For your security, please do not share OTPs, PINs, passwords, or banking credentials with me." Do NOT repeat or store this information anywhere!
 - **CRITICAL**: Never promise or guarantee scheme approval, loan disbursement, or financial payouts.
-- **CRITICAL**: If the lookup tool returns success=false with NOT_FOUND error, say: "I don't currently have verified information about that scheme in my government-scheme dataset, so I don't want to guess. You can check the relevant official government portal for the latest information." Do NOT say: "I checked the government source and it doesn't exist."
-- **CRITICAL**: If the lookup tool returns success=false with FIELD_NOT_AVAILABLE, say: "I don't currently have verified information for that specific aspect of the scheme in my current dataset, so I don't want to guess. Please check the relevant official government portal."
-- **CRITICAL**: If the lookup tool fails due to TIMEOUT or CONNECTION_ERROR, say: "I'm unable to reach the government information source right now. I don't want to guess or provide outdated information. Please try again shortly."
 - **CRITICAL**: Never claim: "You are approved." Instead, say: "Based on the information available, you may meet the published criteria, but final eligibility is determined by the relevant authority."
 - **Escalation Script / Refusal**: If a user asks about account-specific actions, transaction processing, or demands approvals, say: "For your security, I cannot ask for or process OTPs, PINs, or account details, and I cannot guarantee scheme approvals. Please contact your official bank branch directly for assistance with your account."
 
@@ -107,7 +106,7 @@ Greet the user immediately and warmly:
 - If the user is silent, gently check in: "Are you still there? Let me know how I can help."
 
 # OPT-OUT / STOP CALL GUARDRAIL
-If the user expresses a desire to stop, end, or opt out of the call (using phrases like "stop", "don't call me", "end the call", "I don't want this", "goodbye", "remove me", or any translated equivalent), you MUST immediately respond with:
+If the user expresses a desire to stop, end, or opt out of the call (using phrases like "stop", "don't call me", "end the call", "i don't want this", "goodbye", "remove me", or any translated equivalent), you MUST immediately respond with:
 "Understood. I won't continue this call and will make sure you are not contacted again. Thank you, and have a good day."
 Do NOT ask any follow-up questions, do NOT try to convince them, and do NOT continue the conversation.
 """
@@ -313,7 +312,6 @@ class Assistant(Agent):
                     pass
                 
         instructions += f"\n\n# CURRENT SESSION INFO\n- Current User ID: {user_id}\n"
-        super().__init__(instructions=instructions)
         
         # Day 8 call outcome state tracking
         self.call_id = None
@@ -328,6 +326,24 @@ class Assistant(Agent):
         self.pending_success_reason = None
         self.pending_scheme_name = None
         self.pending_information_requested = None
+
+        # Specialist handback queued queries to trigger immediately
+        self.queued_handoff_query = None
+        self.queued_handoff_intent = None
+
+        self._initial_instructions = instructions
+        super().__init__(instructions=instructions)
+
+    @property
+    def instructions(self) -> str:
+        inst = self._initial_instructions
+        if getattr(self, "queued_handoff_query", None) and getattr(self, "queued_handoff_intent", None):
+            inst += f"\n\n# IMMEDIATE DELEGATION QUEUED\n- A handoff is queued immediately because of user request change.\n- User Query: {self.queued_handoff_query}\n- Intent: {self.queued_handoff_intent}\n- You MUST call the appropriate specialist handoff tool immediately for this query (e.g. call `handoff_to_cyber_fraud_specialist` if intent is CYBER_FRAUD). Do NOT answer the query yourself or greet the user normally. Call the tool immediately."
+        return inst
+
+
+
+
 
     def mark_call_success(self, success_reason: str, scheme_name: str = None, information_requested: str = None):
         """Internal helper to mark the call as successful once conditions are met."""
@@ -550,6 +566,185 @@ class Assistant(Agent):
                 "error_type": "CONNECTION_ERROR",
                 "message": f"Connection error or API unavailable: {str(e)}"
             })
+
+    @function_tool
+    async def handoff_to_government_scheme_specialist(
+        self,
+        user_query: str,
+        scheme_name: str,
+        conversation_context: str,
+        language: str,
+        user_id: str,
+    ) -> str:
+        """Hand off the conversation to the Government Scheme Specialist when the user asks for detailed information about an Indian government financial scheme, including eligibility, benefits, required documents, application procedures, premiums, scheme status, or scheme-specific comparisons.
+
+        Use this tool when the question requires specialized government-scheme knowledge.
+
+        Do NOT use this tool for general financial literacy, basic banking concepts, fraud awareness, budgeting, savings concepts, or other questions the main FinBuddy agent can safely answer.
+
+        Do not hand off unnecessarily.
+
+        Args:
+            user_query: The user's original query asking about the government scheme.
+            scheme_name: The name or abbreviation of the government scheme (e.g. PMJDY, PMMY, APY, PMSBY, PMJJBY).
+            conversation_context: Context about the recent turn or query details. Do NOT include sensitive info like OTP, PIN, passwords, account numbers, card credentials, Aadhaar, or PAN.
+            language: The user's current detected or preferred language.
+            user_id: The unique identifier/phone number of the caller.
+        """
+        logger.info(f"handoff_to_government_scheme_specialist tool triggered: scheme={scheme_name}, language={language}")
+        
+        # Clear queued state
+        self.queued_handoff_query = None
+        self.queued_handoff_intent = None
+
+        
+        # Privacy guardrail check - do not transfer sensitive info
+        sensitive_pattern = re.compile(
+            r'\b(\d{4,6})\b|\b(\d{9,18})\b|otp|pin|password\s+\S+|password|secret\S+|cvv|aadhaar|pan|card number',
+            re.IGNORECASE
+        )
+        if sensitive_pattern.search(conversation_context) or sensitive_pattern.search(user_query):
+            logger.warning("Scrubbing sensitive info from handoff parameters.")
+            conversation_context = sensitive_pattern.sub("[SCRUBBED]", conversation_context)
+            user_query = sensitive_pattern.sub("[SCRUBBED]", user_query)
+
+
+        # Create specialist agent instance
+        specialist = GovernmentSchemeSpecialist(
+            main_assistant=self,
+            user_id=user_id,
+            language=language,
+            scheme_name=scheme_name,
+            user_query=user_query,
+        )
+        
+        # Return announcement message matching user's current language
+        announcement_dict = {
+            "Hindi": "मैं आपको हमारे सरकारी योजना विशेषज्ञ से जोड़ता हूँ, जो आपको इसके विवरण में मदद कर सकते हैं।",
+            "Tamil": "நான் உங்களை எங்கள் அரசு திட்ட நிபுணருடன் இணைக்கிறேன், அவர் உங்களுக்கு விவரங்களுடன் உதவுவார்.",
+            "Telugu": "మిమ్మల్ని మా ప్రభుత్వ పథకాల నిపుణుడితో కనెక్ట్ చేస్తాను, వారు మీకు వివరాలతో సహాయం చేయగలరు.",
+            "English": "I'll connect you with my government scheme specialist, who can help with the details."
+        }
+        
+        announcement = announcement_dict.get(language, announcement_dict["English"])
+
+        # Update active agent in LiveKit AgentSession after speaking announcement first
+        try:
+            session = self.session
+        except RuntimeError:
+            session = getattr(self, "_session", None)
+            
+        if session:
+            try:
+                # Speak announcement and wait for playout to complete
+                handle = await session.say(announcement, allow_interruptions=False)
+                await handle.wait_for_playout()
+            except Exception as e:
+                logger.error(f"Error playing handoff announcement: {e}")
+                
+            session.update_agent(specialist)
+            try:
+                session.tts.update_options(voice="Samar")
+            except Exception as e:
+                logger.error(f"Error updating TTS voice to Samar: {e}")
+
+
+
+
+
+        
+        return json.dumps({
+            "success": True,
+            "message": "Handoff completed"
+        })
+
+
+    @function_tool
+    async def handoff_to_cyber_fraud_specialist(
+        self,
+        user_query: str,
+        intent: str,
+        conversation_context: str,
+        language: str,
+        user_id: str,
+    ) -> str:
+        """Hand off the conversation to the Cyber Fraud and Financial Safety Specialist when the caller reports, suspects, or asks for help with a financial scam, cyber fraud, phishing attempt, suspicious UPI request, fake bank/customer-care call, OTP scam, investment scam, loan scam, payment fraud, suspicious link, impersonation, or possible compromise of a financial account.
+
+        Use this specialist when the user needs focused fraud-safety guidance.
+
+        Do not use this tool for ordinary financial-literacy questions or normal government-scheme questions.
+
+        Args:
+            user_query: The user's original query reporting or asking about the fraud or scam.
+            intent: A tag/category of the fraud type (e.g. suspected_bank_impersonation, upi_scam, phishing_link).
+            conversation_context: Context about the recent turn or query details. Do NOT include sensitive info like OTP, PIN, passwords, account numbers, card credentials, Aadhaar, or PAN.
+            language: The user's current detected or preferred language.
+            user_id: The unique identifier/phone number of the caller.
+        """
+        logger.info(f"handoff_to_cyber_fraud_specialist tool triggered: intent={intent}, language={language}")
+        
+        # Clear queued state
+        self.queued_handoff_query = None
+        self.queued_handoff_intent = None
+
+        
+        # Privacy guardrail check - do not transfer sensitive info
+        sensitive_pattern = re.compile(
+            r'\b(\d{4,6})\b|\b(\d{9,18})\b|otp|pin|password\s+\S+|password|secret\S+|cvv|aadhaar|pan|card number',
+            re.IGNORECASE
+        )
+        if sensitive_pattern.search(conversation_context) or sensitive_pattern.search(user_query):
+            logger.warning("Scrubbing sensitive info from handoff parameters.")
+            conversation_context = sensitive_pattern.sub("[SCRUBBED]", conversation_context)
+            user_query = sensitive_pattern.sub("[SCRUBBED]", user_query)
+
+
+        # Create specialist agent instance
+        specialist = CyberFraudSpecialist(
+            main_assistant=self,
+            user_id=user_id,
+            language=language,
+            user_query=user_query,
+            intent=intent,
+        )
+        
+        # Return announcement message matching user's current language
+        announcement_dict = {
+            "Hindi": "मैं आपको हमारे साइबर धोखाधड़ी और वित्तीय सुरक्षा विशेषज्ञ से जोड़ता हूँ, जो आपको अगले कदमों में मदद कर सकते हैं।",
+            "Tamil": "நான் உங்களை எங்கள் சைபர் மோசடி மற்றும் நிதி பாதுகாப்பு நிபுணருடன் இணைக்கிறேன், அவர் உங்களுக்கு அடுத்த கட்ட நடவடிக்கைகளுக்கு உதவுவார்.",
+            "Telugu": "మిమ్మల్ని మా సైబర్ మోసాలు మరియు ఆర్థిక భద్రత నిపుణుడితో కనెక్ట్ చేస్తాను, వారు మీకు తదుపరి చర్యలలో సహాయం చేయగలరు.",
+            "English": "I'll connect you with my cyber fraud and financial safety specialist, who can help you with the next steps."
+        }
+        
+        announcement = announcement_dict.get(language, announcement_dict["English"])
+
+        # Update active agent in LiveKit AgentSession
+        try:
+            session = self.session
+        except RuntimeError:
+            session = getattr(self, "_session", None)
+            
+        if session:
+            try:
+                # Speak announcement and wait for playout to complete
+                handle = await session.say(announcement, allow_interruptions=False)
+                await handle.wait_for_playout()
+            except Exception as e:
+                logger.error(f"Error playing handoff announcement: {e}")
+                
+            session.update_agent(specialist)
+            try:
+                session.tts.update_options(voice="Samar")
+            except Exception as e:
+                logger.error(f"Error updating TTS voice to Samar: {e}")
+        
+        return json.dumps({
+            "success": True,
+            "message": "Handoff completed"
+        })
+
+
+
 
 
 

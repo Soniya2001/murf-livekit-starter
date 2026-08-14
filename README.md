@@ -312,15 +312,26 @@ We introduced a specialized multi-agent handoff router that delegates user conve
 ## Architecture
 
 ```
-                    FinBuddy Main Agent
-                             |
-                   Intent / Request Type
-                        /          \
-                       /            \
-             Government Scheme    Cyber Fraud
-                    |                  |
-                    ▼                  ▼
-            Scheme Specialist    Fraud Specialist
+                    FINBUDDY MAIN
+                         │
+             ┌───────────┴───────────┐
+             ▼                       ▼
+     GOVERNMENT SCHEME         CYBER FRAUD
+        SPECIALIST              SPECIALIST
+             │                       │
+             └───────────┬───────────┘
+                         │
+                     Topic change
+                         │
+                         ▼
+                    MAIN AGENT
+                         │
+                 New intent routing
+                         │
+             ┌───────────┴───────────┐
+             ▼                       ▼
+       Correct specialist       Main answers
+
 ```
 
 ### Components and Responsibilities
